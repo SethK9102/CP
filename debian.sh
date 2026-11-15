@@ -538,10 +538,10 @@ step_passwords() {
   sed -Ei '/^password.*pam_pwquality\.so/{/minlen=/!s/$/ minlen=12 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1/}
            /^password.*pam_unix\.so/{/minlen=/!s/$/ minlen=12/}' /etc/pam.d/common-password
   log "PAM: nullok removed, remember=5"
+  local u
   for u in $(awk -F: '$2=="" {print $1}' /etc/shadow 2>/dev/null); do
-    id "$u" >/dev/null 2>&1 || continue
-    passwd -l "$u" 2>/dev/null || true
-    log "locked empty-password account: $u"
+    [[ $u == "$ME" ]] && { echo "Your account $u has no password: set one with 'passwd $u'."; continue; }
+    ask "Account '$u' has no password. Lock it?" && passwd -l "$u" && log "locked empty-password account: $u"
   done
   echo "Test now: in a new terminal run 'su - $ME' and log in. Keep this root shell open until that works."
 }
@@ -583,9 +583,6 @@ step_firewall() {
   ufw default allow outgoing
   ufw logging on
   ufw --force enable && log "ufw enabled"
-  ufw status verbose | grep -q "Default: deny (incoming)" || ufw default deny incoming
-  ufw status verbose | grep -q "Default: allow (outgoing)" || ufw default allow outgoing
-  ufw status verbose | grep -Eq '22/tcp|22/tcp.*ALLOW|22/tcp.*ALLOWED' || true
 }
 
 step_kernel() {
@@ -602,12 +599,10 @@ step_kernel() {
   done
   sysctl -p
   for f in /etc/shadow /etc/shadow- /etc/gshadow /etc/gshadow-; do
-    [[ -e $f ]] || continue
-    chown root:shadow "$f" && chmod 640 "$f"
+    [[ -e $f ]] && chown root:shadow "$f" && chmod 640 "$f"
   done
   for f in /etc/passwd /etc/passwd- /etc/group /etc/group-; do
-    [[ -e $f ]] || continue
-    chown root:root "$f" && chmod 644 "$f"
+    [[ -e $f ]] && chown root:root "$f" && chmod 644 "$f"
   done
   chmod 440 /etc/sudoers
   chmod 1777 /tmp /var/tmp
@@ -723,10 +718,16 @@ harden_ssh() {
   set_kv $f HostbasedAuthentication no
   set_kv $f IgnoreRhosts yes
   set_kv $f UsePAM yes
-  mkdir -p /etc/ssh/sshd_config.d
-  printf '%s\n' 'PermitRootLogin no' > /etc/ssh/sshd_config.d/99-cp.conf
-  chmod 644 /etc/ssh/sshd_config.d/99-cp.conf
-  grep -H . /etc/ssh/sshd_config.d/*.conf 2>/dev/null && echo "^ these override sshd_config, check them"
+  if grep -qiE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d' $f; then
+    mkdir -p /etc/ssh/sshd_config.d
+    printf '%s\n' 'PermitRootLogin no' 'PermitEmptyPasswords no' 'X11Forwarding no' 'MaxAuthTries 3' 'LoginGraceTime 60' \
+      'HostbasedAuthentication no' 'IgnoreRhosts yes' 'UsePAM yes' > /etc/ssh/sshd_config.d/00-cp.conf
+    chmod 644 /etc/ssh/sshd_config.d/00-cp.conf && log "wrote /etc/ssh/sshd_config.d/00-cp.conf"
+  fi
+  local -a others
+  mapfile -t others < <(find /etc/ssh/sshd_config.d -name '*.conf' ! -name 00-cp.conf 2>/dev/null)
+  ((${#others[@]})) && grep -H . "${others[@]}" &&
+    echo "^ other sshd_config.d files, check them (00-cp.conf is read first and wins)"
   sshd -t && systemctl restart ssh
   ufw allow 22/tcp
 }
@@ -1014,9 +1015,6 @@ step_updates() {
   grep -HnE 'APT::Periodic::[A-Za-z-]+ +"0"' /etc/apt/apt.conf.d/* 2>/dev/null && echo "^ these turn updates off, fix them"
   systemctl unmask apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service 2>/dev/null
   systemctl enable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service 2>/dev/null
-  for t in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do
-    systemctl is-enabled "$t" >/dev/null 2>&1 || systemctl enable "$t" >/dev/null 2>&1
-  done
   log "auto updates on"
   if [[ -n $ME ]] && id "$ME" &>/dev/null; then
     user_gsettings org.gnome.software download-updates true
@@ -1025,8 +1023,8 @@ step_updates() {
   command -v mintupdate-automation >/dev/null && mintupdate-automation upgrade enable && log "mintupdate automation on"
   [[ -n $ME ]] && id "$ME" &>/dev/null && user_gsettings com.linuxmint.updates refresh-schedule-enabled true
   apt-get -y full-upgrade && log "full-upgrade done"
+  systemctl list-timers --all --no-pager 2>/dev/null | grep -E 'apt-daily|unattended'
   echo "Also check the GUI: Mint Update Manager > Preferences (Auto-refresh + Automation), or GNOME Software > Preferences on Debian."
-  systemctl list-timers --all 2>/dev/null | grep -E 'apt-daily|apt-daily-upgrade|unattended' || true
 }
 
 main() {
