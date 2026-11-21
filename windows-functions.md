@@ -4,11 +4,12 @@ This document explains each function in the script and what it is meant to do. T
 
 ## Overview of the script
 
-`Main` asks before each step, in this order: `Audit`, `Users`, `Policy`, `Rights`, `SecOptions`, `Smb1`, `Shares`, `Defender`, `Firewall`, `IIS`, `Webshells`, `Software`, `Features`, `Services`, `Backdoors`, `Files`, `Browsers`, `Updates`. Each step is a function named `Step-<name>`.
+`Main` asks before each step, in this order: `Audit`, `Users`, `Policy`, `Rights`, `SecOptions`, `Domain`, `Smb1`, `Shares`, `Defender`, `Firewall`, `IIS`, `Webshells`, `Software`, `Features`, `Services`, `Backdoors`, `Files`, `Browsers`, `Updates`. Each step is a function named `Step-<name>`.
 
 At start-up the script:
 - requires an elevated PowerShell (`#Requires -RunAsAdministrator`)
 - takes an optional `-Readme <file>` to use a saved README
+- takes an optional `-Step` to run only some steps, for example `-Step Backdoors` or `-Step Users,Policy`. That skips the forensics question and the step prompts.
 - turns on TLS 1.2 so downloads work in Windows PowerShell 5.1
 - checks whether the machine is a domain controller (`$IsDC`). If it is, it loads the ActiveDirectory module and works on domain accounts and domain policy instead of local ones.
 
@@ -177,8 +178,26 @@ Sets these registry values without asking again:
 - administrator accounts not listed on elevation, password reveal button off
 - autologon off, with an offer to delete a stored plain-text `DefaultPassword`
 - Remote Assistance off, AutoPlay and AutoRun off, SmartScreen on, LLMNR off
+- LDAP client signing negotiated
+- no shares and no named pipes reachable anonymously. On a DC it keeps the three pipes AD needs: netlogon, samr and lsarpc.
+- PowerShell script block logging on
 
 Some of these need a reboot or log off.
+
+### Step-Domain
+Only does something on a domain controller or a DNS server.
+
+On a domain controller it sets, without asking again:
+- LDAP server signing required, and LDAP channel binding always
+- Netlogon secure channel enforced for every machine (the Zerologon fix)
+
+It asks before deleting a Netlogon `vulnerablechannelallowlist`, which turns the Zerologon hole back on for the machines it lists. Then it lists users and computers trusted for delegation, except the domain controllers (they are by default), and asks whether to turn delegation off for each.
+
+On a DNS server it goes through each primary zone and asks before:
+- turning zone transfers off when any server may request a full copy of the zone
+- changing unauthenticated dynamic updates to Secure (AD-integrated zones) or None
+
+The LDAP and Netlogon settings may need a reboot.
 
 ### Step-Smb1
 Turns off the SMB1 server protocol and removes SMB1, without asking again:
@@ -227,10 +246,10 @@ Searches the web roots and data folders for ASPX/ASP/ASHX/ASMX/ASCX/CSHTML/PHP/J
 
 ### Step-Software
 In four parts:
-1. Installed programs matching the unwanted list (hacking tools, remote access, P2P, games, cleaners): asks to uninstall each.
+1. Installed programs matching the unwanted list (hacking tools, vulnerability scanners, remote access, P2P, games and game launchers, cleaners, filter bypass tools): asks to uninstall each.
 2. Every other program not made by Microsoft, as a numbered list. Type the numbers to uninstall, and skip anything the README needs.
-3. Portable tools and files anywhere in the data folders, ProgramData, Program Files and Windows\Temp: hashcat, HFS, netcat, mimikatz, SharpHound/BloodHound, PsExec, Rubeus, LaZagne, keyloggers, `.torrent` files and more. Reviewed with `Review-Files`.
-4. Store apps and games such as Solitaire, Candy Crush and Minecraft, for all users: asks to remove each.
+3. Portable tools and files anywhere in the data folders, ProgramData, Program Files and Windows\Temp: hashcat, HFS, netcat, mimikatz, SharpHound/BloodHound, PsExec, Rubeus, LaZagne, winPEAS, Seatbelt, keyloggers, tunnels (chisel, ngrok, frp), VNC servers, copies of password databases (lsass dumps, `ntds.dit`, saved SAM/SYSTEM hives), `.torrent` files and more. Reviewed with `Review-Files`.
+4. Store apps and games such as Solitaire, Candy Crush, Minecraft, Mahjong and Minesweeper, for all users: asks to remove each.
 
 ### Step-Features
 Asks before removing or disabling each of these, so keep anything the README needs:
@@ -239,7 +258,7 @@ Asks before removing or disabling each of these, so keep anything the README nee
 - Optional features on Windows 10/11: Telnet, TFTP, Simple TCP/IP, PowerShell 2.0, SNMP, IIS FTP.
 
 ### Step-Services
-Goes through services that are risky when not needed: IIS, FTP, Remote Desktop, WinRM, Remote Registry, Print Spooler, SNMP, Telnet, Routing/VPN, Internet Connection Sharing, UPnP/SSDP, Simple TCP/IP, File Sharing (Server), Fax, WebDAV, RPC Locator, Mobile Hotspot and Xbox services. Each is matched against the README's critical services. The default answer is keep when the README seems to mention it and disable when it does not. Without a README there is no default.
+Goes through services that are risky when not needed: IIS, FTP, Remote Desktop, WinRM, Remote Registry, Print Spooler, SNMP, Telnet, Routing/VPN, Internet Connection Sharing, UPnP/SSDP, Simple TCP/IP, File Sharing (Server), Fax, WebDAV, RPC Locator, Mobile Hotspot, Xbox services, OpenSSH Server, VNC servers, FileZilla Server, Apache, MySQL, SQL Server, SMTP, DHCP Server, IIS remote management and LPD printing. Each is matched against the README's critical services. The default answer is keep when the README seems to mention it and disable when it does not. Without a README there is no default.
 - Disable stops the service and sets it to Disabled. For Remote Desktop it also blocks RDP connections.
 - Keep, for Remote Desktop, requires Network Level Authentication, TLS and high encryption.
 
@@ -285,7 +304,7 @@ For Windows Update it asks before removing a planted update server (WSUS) settin
 It offers to open Windows Update and start a scan.
 
 ### Main
-Asks whether the Forensics Questions are answered and stops if not. It creates the log, prints whether this is a DC and who you are, runs `Backup`, then asks before each step in order. At the end it prints the changes from this run and how to undo them: `reg import` for registry exports, `secedit /configure` for the policy backup and `netsh advfirewall import` for the firewall.
+Asks whether the Forensics Questions are answered and stops if not. With `-Step` it skips that question and runs just the named steps, in the order given. It creates the log, prints whether this is a DC and who you are, runs `Backup`, then asks before each step in order. At the end it prints the changes from this run and how to undo them: `reg import` for registry exports, `secedit /configure` for the policy backup and `netsh advfirewall import` for the firewall.
 
 ---
 
@@ -293,6 +312,7 @@ Asks whether the Forensics Questions are answered and stops if not. It creates t
 
 These are not functions, but the steps rely on them:
 
+- `$AllSteps`: the steps in the order `Main` offers them
 - `$AdminGroups` / `$PrivGroups`: admin groups and normally-empty privileged groups, different on a DC
 - `$PolicyValues`: the password and lockout values used by the Policy step
 - `$SensitiveRights` / `$BroadSids`: the rights the Rights step checks, and the accounts that should never hold them

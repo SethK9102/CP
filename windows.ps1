@@ -1,6 +1,6 @@
 #Requires -RunAsAdministrator
 
-param([string]$Readme)
+param([string]$Readme, [string[]]$Step)
 
 $ErrorActionPreference = 'Continue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
@@ -602,7 +602,65 @@ function Step-SecOptions {
   Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' EnableSmartScreen 1
   Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' ShellSmartScreenLevel 'Block' String
   Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' EnableMulticast 0
+  Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\LDAP' LDAPClientIntegrity 1
+  Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' EnableScriptBlockLogging 1
+  [string[]]$pipes = @()
+  if ($IsDC) { $pipes = 'netlogon', 'samr', 'lsarpc' }
+  $pipeText = if ($pipes.Count) { $pipes -join ', ' } else { 'none' }
+  Try-Do "anonymous access: no shares, named pipes $pipeText" {
+    $k = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+    [Microsoft.Win32.Registry]::SetValue($k, 'NullSessionShares', [string[]]@(), [Microsoft.Win32.RegistryValueKind]::MultiString)
+    [Microsoft.Win32.Registry]::SetValue($k, 'NullSessionPipes', $pipes, [Microsoft.Win32.RegistryValueKind]::MultiString)
+  }
   Warn 'Some of these apply after a reboot or log off.'
+}
+
+function Step-Domain {
+  $dns = [bool](Get-Command Get-DnsServerZone -ErrorAction SilentlyContinue) -and
+         (Get-Service DNS -ErrorAction SilentlyContinue).Status -eq 'Running'
+  if (-not $IsDC -and -not $dns) { Write-Host '  Not a domain controller or DNS server, nothing to do.'; return }
+  if ($IsDC) {
+    Hdr 'Domain controller: LDAP signing, Netlogon (Zerologon), delegation'
+    $ntds = 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters'
+    Set-Reg $ntds LDAPServerIntegrity 2
+    Set-Reg $ntds LdapEnforceChannelBinding 2
+    $nl = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+    Set-Reg $nl FullSecureChannelProtection 1
+    $allow = (Get-ItemProperty $nl -ErrorAction SilentlyContinue).vulnerablechannelallowlist
+    if ($allow) {
+      Warn "Netlogon still allows vulnerable (Zerologon) connections from: $allow"
+      if (Ask '  Delete that allow list?') { Remove-ItemProperty $nl -Name vulnerablechannelallowlist; Log 'deleted Netlogon vulnerablechannelallowlist' }
+    }
+    $dcs = @(Get-ADDomainController -Filter * | ForEach-Object { $_.Name })
+    $f = 'TrustedForDelegation -eq $true -or TrustedToAuthForDelegation -eq $true'
+    $deleg = @(Get-ADUser -Filter $f -Properties TrustedForDelegation, TrustedToAuthForDelegation) +
+             @(Get-ADComputer -Filter $f -Properties TrustedForDelegation, TrustedToAuthForDelegation | Where-Object { $dcs -notcontains $_.Name })
+    if (-not $deleg.Count) { Write-Host '  No accounts are trusted for delegation (domain controllers are, by default).' }
+    foreach ($o in $deleg) {
+      if (Ask "'$($o.SamAccountName)' is trusted for delegation (it can act as other users on other servers). Turn that off?") {
+        Try-Do "delegation off: $($o.SamAccountName)" { Set-ADAccountControl -Identity $o -TrustedForDelegation $false -TrustedToAuthForDelegation $false }
+      }
+    }
+  }
+  if ($dns) {
+    Hdr 'DNS zones: zone transfers and dynamic updates'
+    $zones = @(Get-DnsServerZone -ErrorAction SilentlyContinue |
+      Where-Object { $_.ZoneType -eq 'Primary' -and -not $_.IsAutoCreated -and $_.ZoneName -ne 'TrustAnchors' })
+    foreach ($z in $zones) {
+      Write-Host ('--- {0}  transfers: {1}  dynamic updates: {2}  AD-integrated: {3}' -f $z.ZoneName, $z.SecureSecondaries, $z.DynamicUpdate, $z.IsDsIntegrated)
+      if ("$($z.SecureSecondaries)" -match 'TransferAnyServer' -and
+          (Ask "  $($z.ZoneName) gives a full copy of the zone to any server that asks. Turn zone transfers off?")) {
+        Try-Do "DNS $($z.ZoneName): zone transfers off" { Set-DnsServerPrimaryZone -Name $z.ZoneName -SecureSecondaries NoTransfer }
+      }
+      if ("$($z.DynamicUpdate)" -eq 'NonsecureAndSecure') {
+        $to = if ($z.IsDsIntegrated) { 'Secure' } else { 'None' }
+        if (Ask "  $($z.ZoneName) accepts dynamic updates from anyone. Set dynamic updates to $to?") {
+          Try-Do "DNS $($z.ZoneName): dynamic updates $to" { Set-DnsServerPrimaryZone -Name $z.ZoneName -DynamicUpdate $to }
+        }
+      }
+    }
+  }
+  Warn 'The LDAP and Netlogon settings may need a reboot.'
 }
 
 function Step-Smb1 {
@@ -819,11 +877,13 @@ function Step-Webshells {
   Review-Files @($hits | ForEach-Object { $_.Path })
 }
 
-$BadApps = 'hashcat|\bHFS\b|HTTP File Server|TeamViewer|AnyDesk|RustDesk|Pinball|Wireshark|Npcap|WinPcap|\bNmap\b|Zenmap|\bCain\b|John the Ripper|Ophcrack|Angry IP|Advanced IP Scanner|Advanced Port Scanner|Metasploit|Burp Suite|mimikatz|netcat|LOIC|uTorrent|BitTorrent|qBittorrent|Vuze|FrostWire|Deluge|Transmission|Tor Browser|CCleaner|\bSteam\b|Epic Games|Minecraft|Roblox|Battle\.net|RealVNC|TightVNC|UltraVNC|Ammyy|Radmin|LogMeIn|Splashtop|ngrok|Hydra|Aircrack|Ettercap|Cheat Engine|Shareaza|LimeWire|eMule|WinDirStat|TreeSize|Everything Search'
+$BadApps = 'hashcat|\bHFS\b|HTTP File Server|TeamViewer|AnyDesk|RustDesk|Pinball|Wireshark|Npcap|WinPcap|\bNmap\b|Zenmap|\bCain\b|John the Ripper|Ophcrack|Angry IP|Advanced IP Scanner|Advanced Port Scanner|Metasploit|Burp Suite|mimikatz|netcat|LOIC|uTorrent|BitTorrent|qBittorrent|Vuze|FrostWire|Deluge|Transmission|Tor Browser|CCleaner|\bSteam\b|Epic Games|Minecraft|Roblox|Battle\.net|RealVNC|TightVNC|UltraVNC|Ammyy|Radmin|LogMeIn|Splashtop|ngrok|Hydra|Aircrack|Ettercap|Cheat Engine|Shareaza|LimeWire|eMule|WinDirStat|TreeSize|Everything Search|TigerVNC|Chrome Remote Desktop|NoMachine|Parsec|Supremo|Remote Utilities|DWService|MeshAgent|ScreenConnect|Zoho Assist|L0phtCrack|Brutus|Nessus|OpenVAS|Acunetix|sqlmap|Nikto|BitComet|Tixati|BitLord|WebTorrent|Psiphon|Ultrasurf|Hotspot Shield|\bOrigin\b|\bEA app\b|Ubisoft Connect|GOG Galaxy|Riot Client|League of Legends|VALORANT|Fortnite'
 $BadFiles = @('*hashcat*', 'hfs.exe', 'hfs*.exe', '*pinball*', '*SharpHound*', '*BloodHound*', '*mimikatz*', 'nc.exe', 'nc64.exe',
               'ncat.exe', '*netcat*', '*psexec*', 'Rubeus*', '*lazagne*', 'procdump*', '*pwdump*', '*kerbrute*', 'PowerView*',
-              '*CrackMapExec*', 'john.exe', '*hydra*.exe', 'wce.exe', '*keylog*', '*.torrent', '*TeamViewer*', '*AnyDesk*')
-$BadAppx = 'Solitaire|CandyCrush|BubbleWitch|MarchofEmpires|HiddenCity|Minecraft|Roblox|king\.com|Disney|FarmVille|Asphalt'
+              '*CrackMapExec*', 'john.exe', '*hydra*.exe', 'wce.exe', '*keylog*', '*.torrent', '*TeamViewer*', '*AnyDesk*',
+              'winPEAS*', 'Seatbelt*', 'SharpUp*', '*Inveigh*', 'Certify.exe', 'Snaffler*', 'chisel*.exe', 'ngrok*.exe', 'frpc*.exe',
+              'winvnc*.exe', 'tvnserver.exe', 'lsass*.dmp', 'ntds.dit', 'sam.save', 'system.save', 'security.save')
+$BadAppx = 'Solitaire|CandyCrush|BubbleWitch|MarchofEmpires|HiddenCity|Minecraft|Roblox|king\.com|Disney|FarmVille|Asphalt|Mahjong|Minesweeper|Sudoku|Jigsaw|Fishdom|Gardenscapes|Township|RoyalRevolt'
 
 function Step-Software {
   Hdr 'Installed hacking tools, games, remote access, P2P'
@@ -891,6 +951,9 @@ $RiskySvcs = [ordered]@{
   SharedAccess = 'internet connection sharing'; SSDPSRV = 'UPnP|SSDP'; upnphost = 'UPnP'; simptcp = 'simple tcp'
   LanmanServer = 'file shar|\bSMB\b|\bshares?\b'; Fax = '\bfax'; WebClient = 'WebDAV'; RpcLocator = 'rpc locator'
   icssvc = 'hotspot'; XblAuthManager = 'xbox'; XblGameSave = 'xbox'; XboxNetApiSvc = 'xbox'; MSFTPSVC = '\bFTP'
+  sshd = 'SSH'; tvnserver = 'VNC'; uvnc_service = 'VNC'; vncserver = 'VNC'; WinVNC4 = 'VNC'; 'FileZilla Server' = '\bFTP'
+  'Apache2.4' = 'apache|web ?server|web ?site|\bhttp'; MySQL = 'mysql|database'; MySQL80 = 'mysql|database'
+  MSSQLSERVER = 'SQL Server|database'; SMTPSVC = 'SMTP|mail'; DHCPServer = 'DHCP'; WMSvc = 'IIS|web ?server|web ?site'; LPDSVC = 'print|LPD'
 }
 
 function Step-Services {
@@ -1236,15 +1299,23 @@ function Step-Updates {
   }
 }
 
+$AllSteps = 'Audit', 'Users', 'Policy', 'Rights', 'SecOptions', 'Domain', 'Smb1', 'Shares', 'Defender', 'Firewall', 'IIS',
+            'Webshells', 'Software', 'Features', 'Services', 'Backdoors', 'Files', 'Browsers', 'Updates'
+
 function Main {
-  if (-not (Ask 'Forensics Questions answered already?')) { Write-Host 'Do those first.'; return }
+  $only = @($Step | ForEach-Object { $_ -split '[,\s]+' } | Where-Object { $_ })
+  foreach ($s in $only) {
+    if ($AllSteps -notcontains $s) { Warn "Unknown step '$s'. Steps: $($AllSteps -join ', ')"; return }
+  }
+  if (-not $only.Count -and -not (Ask 'Forensics Questions answered already?')) { Write-Host 'Do those first.'; return }
   if (-not (Test-Path $Log)) { New-Item -ItemType File -Path $Log -Force | Out-Null }
   $start = @(Get-Content $Log).Count
   Write-Host "Domain controller: $IsDC   You: $script:Me"
   Backup
-  foreach ($s in 'Audit', 'Users', 'Policy', 'Rights', 'SecOptions', 'Smb1', 'Shares', 'Defender', 'Firewall', 'IIS', 'Webshells',
-                 'Software', 'Features', 'Services', 'Backdoors', 'Files', 'Browsers', 'Updates') {
-    if (Ask "Run step: ${s}?") { & "Step-$s" }
+  if ($only.Count) {
+    foreach ($s in $only) { & "Step-$s" }
+  } else {
+    foreach ($s in $AllSteps) { if (Ask "Run step: ${s}?") { & "Step-$s" } }
   }
   Hdr 'Changes this run'
   Get-Content $Log | Select-Object -Skip $start | ForEach-Object { Write-Host $_ }

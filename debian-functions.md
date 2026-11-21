@@ -4,7 +4,7 @@ This document explains each function in the script and what it is meant to do. T
 
 ## Overview of the script
 
-`main` asks before each step, in this order: `audit`, `repos`, `apt_update`, `users`, `sudo`, `passwords`, `login`, `firewall`, `kernel`, `misc`, `packages`, `services`, `browsers`, `backdoors`, `media`, `files`, `updates`. Each step is a function named `step_<name>`.
+`main` asks before each step, in this order: `audit`, `repos`, `apt_update`, `users`, `sudo`, `passwords`, `login`, `firewall`, `kernel`, `misc`, `packages`, `services`, `browsers`, `backdoors`, `media`, `files`, `updates`. Each step is a function named `step_<name>`. To run only some steps, name them: `sudo bash cp-linux.sh backdoors` or `sudo bash cp-linux.sh users passwords`. That skips the forensics question and the step prompts.
 
 Run it as root with sudo. `$ME` (you) comes from `SUDO_USER`, so your own account is never deleted or locked. Every change is logged to `/root/cp-log.txt`, and all of `/etc` is backed up to `/root/etc-backup-HHMMSS.tgz` before anything runs.
 
@@ -102,6 +102,8 @@ Runs `apt-get update`.
 ### step_users
 Installs sudo if missing. Shows the authorized users and admins read from the README and lets you edit them (you are always included). Then it:
 - offers to delete every account with UID 1000 or higher that is not on the list
+- offers to delete any other account with UID 0 (a second root). An authorized user with UID 0 is moved to a normal UID instead.
+- for accounts in the system range (UID below 1000) that can still log in and are not on the list: delete, lock (no shell, no password) or keep
 - offers to create README users that do not exist
 - offers to remove anyone who is not a README admin from sudo, admin, wheel, adm, lxd, docker, lpadmin and sambashare, and anyone at all from disk and shadow
 - offers to fix accounts whose primary group is one of those groups
@@ -168,6 +170,8 @@ Decides whether the README needs a service. It is needed if the README names it,
 ### step_services
 Shows the README's critical services. For each installed service in `SERVICES`, the default answer is keep when `svc_wanted` says the README needs it, and purge when it does not. Without a README there is no default. Keep runs the matching `harden_*` function and opens its firewall port. Purge removes the package. If the README names a service that is not installed, it says so.
 
+Then it goes through default services that are rarely needed (`EXTRA_SVC`: avahi, cups-browsed, rpcbind, dnsmasq, slapd, the DHCP server and rsync). For each one that is enabled or running it offers to disable it, defaulting to keep when the README mentions it.
+
 ### ff_policy
 Prints the Firefox `policies.json`: telemetry and studies off, pop-ups blocked, no saved logins, tracking protection, HTTPS-only, and the `FF_PREFS` preferences locked.
 
@@ -183,8 +187,10 @@ Looks for persistence. It asks before commenting out, deleting, changing or kill
 - cron: suspicious lines, every user crontab entry, and cron files no package installed. at jobs are only listed (remove them with `atrm`).
 - systemd units no package installed, including per-user units
 - `rc.local` commands
-- shell startup files and autostart entries: suspicious lines and aliases (sudo, su, passwd...), plus startup files no package installed
+- shell startup files, autostart entries and NetworkManager dispatcher scripts: suspicious lines and aliases (sudo, su, passwd...), plus startup files no package installed
 - PAM backdoors (`pam_exec`, `sufficient pam_permit`) and `/etc/ld.so.preload`
+- APT hooks, the commands apt runs on every update or install (`Pre-Invoke`, `Post-Invoke`...), in files no package installed, plus suspicious lines in any APT config
+- udev rules that run programs (`RUN`, `PROGRAM`) in files no package installed, plus suspicious lines in any rule
 - SSH `authorized_keys` files
 - SUID/SGID on programs that can give a shell (`GTFO`) or that no package installed, and dangerous file capabilities
 - programs in bin folders that no package installed
@@ -216,7 +222,7 @@ Each file is reviewed with `review_files`, so answer forensics questions about t
 It reminds you to check the update settings in the GUI too.
 
 ### main
-Checks it runs as root and asks whether the Forensics Questions are answered (it stops if not). It backs up `/etc`, then asks before each step in order. At the end it prints the changes from this run and how to restore one file from the backup.
+Checks it runs as root and asks whether the Forensics Questions are answered (it stops if not). It backs up `/etc`, then asks before each step in order. With step names as arguments it runs just those steps, without the forensics question or the step prompts. At the end it prints the changes from this run and how to restore one file from the backup.
 
 ---
 
@@ -257,11 +263,13 @@ These are not functions, but the steps rely on them:
 - `SUS`: suspicious command patterns (netcat, `/dev/tcp`, `bash -i`, piping downloads into a shell, `LD_PRELOAD`...) for cron, rc.local and startup files
 - `STRONG`: reverse shell and web shell code, used to search files
 - `GTFO`: programs that can give a root shell when they are SUID
-- `BAD_PKGS`: prohibited packages (password crackers, scanners, sniffers, telnet/rsh servers, games, torrent clients)
+- `BAD_PKGS`: prohibited packages (password crackers, scanners, sniffers, VNC/RDP and TFTP servers, telnet/rsh servers, games including terminal games, torrent and P2P clients)
 - `SELF_PKGS`: packages the script installs itself, so `step_packages` never offers them
 - `FF_PREFS` / `CHROME_POLICY`: browser settings written by `step_browsers`
 - `SERVICES`: the services `step_services` reviews
 - `SVC_RE` / `SVC_KIND`: README words for each service and for each kind of service, used by `svc_wanted`
+- `EXTRA_SVC`: default services `step_services` offers to disable, with the README words that mean they are needed
+- `STEPS`: the steps in the order `main` offers them
 - `README_CACHE`: `/root/cp-readme.html`, the saved README
 
 ---

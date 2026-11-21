@@ -296,9 +296,11 @@ step_backdoors() {
     /etc/profile /etc/profile.d/* /etc/bash.bashrc /etc/environment /etc/zsh/zshrc \
     /root/.bashrc /root/.profile /root/.bash_profile /root/.bash_logout \
     /home/*/.bashrc /home/*/.profile /home/*/.bash_profile /home/*/.bash_logout /home/*/.zshrc \
-    /etc/xdg/autostart/*.desktop /home/*/.config/autostart/*.desktop | grep -v '^/etc/profile.d/vte-')"
-  hdr "Startup files not from any package"
-  mapfile -t list < <({ find /etc/profile.d /etc/xdg/autostart /etc/update-motd.d /etc/init.d -type f ! -name 'debuginfod.*' 2>/dev/null | unowned
+    /etc/xdg/autostart/*.desktop /home/*/.config/autostart/*.desktop \
+    /etc/NetworkManager/dispatcher.d/* /etc/NetworkManager/dispatcher.d/*/* | grep -v '^/etc/profile.d/vte-')"
+  hdr "Startup files not from any package (incl. NetworkManager dispatcher scripts)"
+  mapfile -t list < <({ find /etc/profile.d /etc/xdg/autostart /etc/update-motd.d /etc/init.d /etc/NetworkManager/dispatcher.d \
+      -type f ! -name 'debuginfod.*' 2>/dev/null | unowned
     ls -d /home/*/.config/autostart/* /root/.config/autostart/* 2>/dev/null; })
   review_files "${list[@]}"
 
@@ -306,6 +308,14 @@ step_backdoors() {
   review_lines "$(grep -nHsE 'pam_exec|sufficient[[:space:]]+pam_permit' /etc/pam.d/*)"
   hdr "/etc/ld.so.preload"
   [[ -s /etc/ld.so.preload ]] && review_files /etc/ld.so.preload || echo "  none"
+  hdr "APT hooks (commands apt runs on every update or install)"
+  mapfile -t list < <({ find /etc/apt/apt.conf.d -type f 2>/dev/null | unowned; ls -d /etc/apt/apt.conf 2>/dev/null; })
+  review_lines "$(grep -nHsE 'Invoke|Install-Pkgs' "${list[@]}" /dev/null
+                  grep -nHsE "$SUS" /etc/apt/apt.conf /etc/apt/apt.conf.d/*)"
+  hdr "udev rules that run programs"
+  mapfile -t list < <(find /etc/udev/rules.d /usr/lib/udev/rules.d -type f 2>/dev/null | unowned)
+  review_lines "$(grep -nHsE 'RUN|PROGRAM|IMPORT\{program\}' "${list[@]}" /dev/null
+                  grep -nHsE "$SUS" /etc/udev/rules.d/* /usr/lib/udev/rules.d/*)"
   hdr "SSH authorized_keys"
   for f in /root/.ssh/authorized_keys* /home/*/.ssh/authorized_keys*; do
     [[ -s $f ]] || continue
@@ -458,10 +468,37 @@ step_users() {
   if [[ ${#AUTH[@]} -eq 0 ]]; then echo "No users entered, skipping."; return; fi
   AUTH+=("$ME") ADMINS+=("$ME")
 
-  for u in $(awk -F: '$3>=1000 && $3<65534 {print $1}' /etc/passwd); do
+  for u in $(awk -F: '$3>=1000 && $3!=65534 {print $1}' /etc/passwd); do
     in_list "$u" "${AUTH[@]}" && continue
     ask "Delete unauthorized user '$u'?" && { deluser --remove-home "$u" 2>/dev/null || userdel -r "$u"; } && log "deleted user $u"
   done
+
+  local nu ng uid shell home a
+  for u in $(awk -F: '$3==0 && $1!="root" {print $1}' /etc/passwd); do
+    if in_list "$u" "${AUTH[@]}"; then
+      nu=$(awk -F: '$3>=1000 && $3<60000 {print $3}' /etc/passwd | sort -n | tail -n1)
+      nu=$(( ${nu:-999} + 1 ))
+      ask "Authorized user '$u' has UID 0 (full root powers). Give it UID $nu?" || continue
+      getent group "$u" >/dev/null || groupadd "$u"
+      ng=$(getent group "$u" | cut -d: -f3)
+      awk -F: -v OFS=: -v u="$u" -v n="$nu" -v g="$ng" '$1==u {$3=n; if ($4==0) $4=g} 1' /etc/passwd > /etc/passwd.cp &&
+        cat /etc/passwd.cp > /etc/passwd && rm -f /etc/passwd.cp
+      home=$(getent passwd "$u" | cut -d: -f6)
+      [[ $home == /home/* && -d $home ]] && chown -R "$u:" "$home"
+      log "UID of $u: 0 -> $nu"
+    else
+      ask "'$u' has UID 0, a second root account. Delete it?" && userdel -f "$u" && log "deleted UID 0 account $u"
+    fi
+  done
+  while IFS=: read -r u uid shell home <&3; do
+    in_list "$u" "${AUTH[@]}" && continue
+    echo "Hidden account '$u': UID $uid (system range) but it can log in (shell $shell, home $home)"
+    read -rp "  (d)elete it, (l)ock it (no shell, no password), (k)eep? [k] " a
+    case $a in
+      d*) if [[ $home == /home/* ]]; then userdel -rf "$u"; else userdel -f "$u"; fi && log "deleted hidden account $u" ;;
+      l*) usermod -s /usr/sbin/nologin "$u" && passwd -l "$u" >/dev/null && log "locked hidden account $u" ;;
+    esac
+  done 3< <(awk -F: '$3>0 && $3<1000 && $7 !~ /(nologin|false|sync|shutdown|halt)$/ {print $1":"$3":"$7":"$6}' /etc/passwd)
   for u in "${AUTH[@]}"; do
     id "$u" &>/dev/null && continue
     ask "README user '$u' missing. Create?" && adduser --gecos '' --disabled-password "$u" && log "created user $u"
@@ -694,7 +731,13 @@ BAD_PKGS=(john john-data hydra hydra-gtk nmap zenmap ophcrack ophcrack-cli wires
   aisleriot gnome-mines gnome-games gnome-chess gnome-sudoku gnome-mahjongg gnome-robots
   gnome-nibbles gnome-klotski gnome-tetravex gnome-taquin four-in-a-row five-or-more hitori iagno
   lightsoff quadrapassel swell-foop tali kpat kmines deluge deluge-gtk transmission-gtk
-  transmission-qt qbittorrent frostwire nmapsi4 youtube-dl yt-dlp)
+  transmission-qt qbittorrent frostwire nmapsi4 youtube-dl yt-dlp
+  x11vnc tightvncserver tigervnc-standalone-server tigervnc-scraping-server xrdp tftpd tftpd-hpa atftpd
+  pdfcrack rarcrack sucrack crunch cewl ncrack patator masscan zmap netdiscover nbtscan arp-scan hping3
+  dirb gobuster wfuzz wapiti skipfish bettercap macchanger driftnet dnsrecon fierce thc-ipv6
+  bsdgames ninvaders nsnake pacman4console bastet moon-buggy greed nethack-console crawl angband
+  supertuxkart extremetuxracer openttd frozen-bubble neverball pingus 2048-qt endless-sky manaplus
+  amule nicotine ktorrent rtorrent qbittorrent-nox transmission-cli transmission-daemon)
 
 apt_installed_by_hand() {
   ls -tr /var/log/apt/history.log* 2>/dev/null | xargs -r zcat -f | awk '
@@ -964,6 +1007,10 @@ declare -A SVC_KIND=(
   ['samba']='file shar' ['bind9']='\<dns\>' ['squid']='proxy'
   ['postfix dovecot-core']='mail server|smtp|imap|pop3' ['cups']='printer|printing'
 )
+declare -A EXTRA_SVC=(
+  [avahi-daemon]='avahi|mdns|bonjour|zeroconf' [cups-browsed]='cups|print' [rpcbind]='rpcbind|\<nfs\>|\<nis\>'
+  [dnsmasq]='dnsmasq|\<dns\>|dhcp' [slapd]='ldap|slapd' [isc-dhcp-server]='dhcp' [rsync]='rsync'
+)
 
 svc_wanted() {
   local p=$1 src=$2 members m
@@ -1015,6 +1062,20 @@ step_services() {
           log "kept $p" ;;
       p*) apt-get purge -y "$p" && log "purged $p" ;;
     esac
+  done
+
+  hdr "Default services that are rarely needed"
+  local s
+  for s in $(printf '%s\n' "${!EXTRA_SVC[@]}" | sort); do
+    systemctl is-enabled -q "$s" 2>/dev/null || systemctl is-active -q "$s" 2>/dev/null || continue
+    def=''
+    if [[ -n $text ]]; then
+      if grep -qiE "${EXTRA_SVC[$s]}" <<< "$src"; then def=k; else def=d; fi
+    fi
+    read -e -i "$def" -rp "$s is enabled or running. (d)isable, (k)eep? " a
+    [[ $a == d* ]] || continue
+    systemctl disable --now "$s.socket" 2>/dev/null
+    systemctl disable --now "$s.service" && log "disabled $s"
   done
 }
 
@@ -1076,16 +1137,25 @@ step_updates() {
   echo "Also check the GUI: Mint Update Manager > Preferences (Auto-refresh + Automation), or GNOME Software > Preferences on Debian."
 }
 
+STEPS=(audit repos apt_update users sudo passwords login firewall kernel misc packages services browsers backdoors media files updates)
+
 main() {
   [[ $EUID -eq 0 ]] || { echo "Run with sudo."; exit 1; }
-  ask "Forensics Questions answered already?" || { echo "Do those first."; exit 1; }
+  local -a only=("${@//-/_}")
+  local s
+  for s in "${only[@]}"; do
+    in_list "$s" "${STEPS[@]}" || { echo "Unknown step '$s'. Steps: ${STEPS[*]}"; exit 1; }
+  done
+  ((${#only[@]})) || ask "Forensics Questions answered already?" || { echo "Do those first."; exit 1; }
   touch "$LOG"
   local start bak=/root/etc-backup-$(date +%H%M%S).tgz
   start=$(wc -l < "$LOG")
   tar czf "$bak" /etc 2>/dev/null; log "backed up /etc to $bak"
-  for s in audit repos apt_update users sudo passwords login firewall kernel misc packages services browsers backdoors media files updates; do
-    ask "Run step: $s?" && "step_$s"
-  done
+  if ((${#only[@]})); then
+    for s in "${only[@]}"; do "step_$s"; done
+  else
+    for s in "${STEPS[@]}"; do ask "Run step: $s?" && "step_$s"; done
+  fi
   hdr "Changes this run"
   tail -n +"$((start + 1))" "$LOG"
   echo "Lost points? Undo that change. Restore one file: tar xzf $bak -C / etc/<path>"
