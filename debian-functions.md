@@ -39,6 +39,9 @@ Loads the README content from a supplied file path or by locating a likely file 
 ### readme_names
 Parses user lists from the README text. It looks for headings like “Authorized Administrators” or “Authorized Users,” then extracts valid usernames from the lines underneath while ignoring blank lines, password entries, and non-user-style entries. This generates the `AUTH` and `ADMINS` arrays used in the user-management step.
 
+### readme_groups
+Finds README lines like "Create a group called "X" and add ...: a, b, c" and returns each group name with its members (listed after the colon, or one per line below it). `step_users` shows what it found so it can be corrected before the group is created.
+
 ### readme_service_text
 Extracts the “Critical Services” section from the README when present. If that section is missing, it falls back to the whole README text. This gives the script a list of services the README says must remain active, which helps decide whether to keep, remove, or harden services.
 
@@ -100,7 +103,7 @@ Restores official package repositories based on the detected distro (`ubuntu`, `
 Runs `apt-get update` to refresh the package index and prepare for package installation or security upgrades.
 
 ### step_users
-Reads the README to parse authorized users/admins and compares them against the system. It prompts the user to confirm or correct the list, creates missing accounts, deletes unauthorized users, manages group memberships, sets passwords, and enforces password aging and lockout settings. It also locks the root password if the user approves.
+Reads the README to parse authorized users/admins and compares them against the system. It prompts the user to confirm or correct the list, creates missing accounts, deletes unauthorized users, manages group memberships, creates the groups the README asks for (with their members), sets passwords, and enforces password aging and lockout settings. It also locks the root password if the user approves.
 
 ### step_sudo
 Reviews `/etc/sudoers` and `/etc/sudoers.d` for risky entries such as `NOPASSWD`, `!authenticate`, and overly permissive rules. It removes or warns about suspicious sudoers files, enforces `Defaults use_pty`, and validates the config with `visudo`. This prevents privilege escalation and misconfigured sudo rights.

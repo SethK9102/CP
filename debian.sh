@@ -168,6 +168,25 @@ readme_names() {
     {print $1}' <<< "$1"
 }
 
+# "Create a group called "X" and add the new members of the group: a, b, c."  ->  X|a b c
+# Members after the colon, or one per line below it when the line ends with the colon.
+readme_groups() {
+  perl -ne '
+    s/\xe2\x80[\x98\x99\x9c\x9d]/"/g;
+    if (defined $g) {
+      if (/^\s*([a-z_][a-z0-9_.-]*)\s*$/) { $m .= " $1"; next }
+      print "$g|$m\n"; undef $g;
+    }
+    next unless /create (?:a |the )?(?:new )?(?:\w+ )?group (?:(?:called|named) ["\x27]?([\w.-]+)|["\x27]([\w.-]+)["\x27])/i;
+    my $name = defined $1 ? $1 : $2;
+    my @m;
+    if (/:\s*(.*\S)\s*$/) {
+      @m = grep { /^[a-z_][a-z0-9_.-]*$/ && $_ ne "and" } map { s/^\W+|[^\w]+$//gr } split /[\s,]+/, $1;
+    } elsif (/:\s*$/) { $g = $name; $m = ""; next }
+    print "$name|@m\n";
+    END { print "$g|$m\n" if defined $g }' <<< "$1" | sed 's/| /|/'
+}
+
 readme_service_text() {
   local s
   s=$(awk '
@@ -468,6 +487,38 @@ step_users() {
     id "$u" &>/dev/null || continue
     id -nG "$u" | grep -qw sudo && continue
     ask "Add admin '$u' to sudo?" && usermod -aG sudo "$u" && log "added $u to sudo"
+  done
+
+  local line gname
+  local -a groups members have
+  mapfile -t groups < <(readme_groups "$text")
+  ((${#groups[@]})) || echo "README asks for no new groups (that the script could find)."
+  while :; do
+    if ((${#groups[@]})); then
+      line=${groups[0]} groups=("${groups[@]:1}")
+      echo "README group '${line%%|*}' with members: ${line#*|}  (edit if wrong)"
+    else
+      read -rp "Another group the README asks for (name, Enter = none): " gname
+      [[ -n $gname ]] || break
+      line="$gname|"
+    fi
+    read -e -i "${line%%|*}" -rp "  Group name: " gname
+    [[ -n $gname ]] || continue
+    read -e -i "${line#*|}" -rp "  Members (space-separated): " -a members
+    if ! getent group "$gname" >/dev/null; then
+      ask "  Create group '$gname'?" || continue
+      groupadd "$gname" && log "created group $gname" || continue
+    fi
+    read -ra have <<< "$(getent group "$gname" | cut -d: -f4 | tr , ' ')"
+    for u in "${members[@]}"; do
+      in_list "$u" "${have[@]}" && continue
+      id "$u" &>/dev/null || { echo "  no user '$u': create it first (it must be in the authorized list)"; continue; }
+      gpasswd -a "$u" "$gname" >/dev/null && log "added $u to $gname"
+    done
+    for u in "${have[@]}"; do
+      in_list "$u" "${members[@]}" && continue
+      ask "  '$u' is in $gname but not in the list. Remove?" && gpasswd -d "$u" "$gname" >/dev/null && log "removed $u from $gname"
+    done
   done
 
   local pw
