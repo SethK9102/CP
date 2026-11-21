@@ -1,35 +1,5 @@
 #Requires -RunAsAdministrator
-<#
-  cp-windows.ps1 - interactive CyberPatriot Windows / Windows Server hardening.
-  Windows counterpart to cp-linux.sh: every change asks first and is logged.
 
-  Run from an elevated PowerShell (Run as administrator):
-    powershell -ExecutionPolicy Bypass -File .\cp-windows.ps1
-    powershell -ExecutionPolicy Bypass -File .\cp-windows.ps1 -Readme C:\Users\me\Desktop\readme.html
-
-  Answer the Forensics Questions BEFORE running: deleting files and users can destroy the answers.
-  Works on a workstation, a member server, or a domain controller (uses the AD cmdlets there).
-
-  Steps (each one is optional):
-    Audit       read-only overview
-    Users       README users/admins, README groups to create, remove unauthorized users, admin groups, passwords, Guest
-    Policy      password length/complexity/history/age, lockout, audit policy (domain policy on a DC)
-    Rights      user rights assignments: regular users holding admin-level rights (backup, debug, take ownership, ...)
-    SecOptions  SMB signing (always), anonymous access, NTLMv2, UAC, autoplay, LLMNR, WDigest
-    Smb1        turn off and remove SMB 1.x
-    Shares      remove extra/hidden shares (Backup$), fix share + NTFS permissions (Handbook)
-    Defender    remove exclusions (.exe etc), turn protection back on, update, scan
-    Firewall    on for all profiles, review custom inbound allow rules
-    IIS         directory browsing off, server header, app pool identities, anonymous FTP
-    Webshells   ASPX/ASP/PHP files that run commands
-    Software    hashcat, HFS, TeamViewer, Pinball, SharpHound, etc. (installed + portable + Store)
-    Features    Telnet/TFTP/PowerShell v2/SNMP etc.
-    Services    keep only what the README needs
-    Backdoors   tasks, Run keys, startup, sticky keys, odd services, WMI, port proxy, hosts, listeners
-    Files       media, plain-text passwords/PII, programs disguised as documents
-    Browsers    Chrome/Edge/Firefox policies
-    Updates     Notepad++/WinSCP/etc via winget or download page, Windows Update settings
-#>
 param([string]$Readme)
 
 $ErrorActionPreference = 'Continue'
@@ -54,8 +24,6 @@ if ($IsDC) {
   $AdminGroups = @('Administrators')
   $PrivGroups  = @('Backup Operators', 'Power Users', 'Hyper-V Administrators', 'Remote Management Users', 'Network Configuration Operators', 'Cryptographic Operators')
 }
-
-# ---------------------------------------------------------------- helpers
 
 function Log([string]$m) {
   $l = '[{0}] {1}' -f (Get-Date -Format T), $m
@@ -106,7 +74,6 @@ function Review-Files([string[]]$files) {
   }
 }
 
-# Folders where people and attackers leave files: everything at the top of C:\ except Windows itself.
 function Get-DataDirs {
   $skip = @('Windows', '$Recycle.Bin', 'System Volume Information', 'Recovery', 'Config.Msi', 'PerfLogs',
             '$WinREAgent', '$SysReset', 'Documents and Settings', 'Program Files', 'Program Files (x86)', 'ProgramData')
@@ -128,8 +95,6 @@ function Resolve-Sid([string]$s) {
 function Resolve-Name([string]$n) {
   try { (New-Object Security.Principal.NTAccount($n)).Translate([Security.Principal.SecurityIdentifier]).Value } catch { $null }
 }
-
-# ---------------------------------------------------------------- README
 
 function Convert-HtmlToLines([string]$raw) {
   $t = $raw -replace '(?is)<(script|style)[^>]*>.*?</\1>', ''
@@ -201,7 +166,6 @@ function Get-ReadmeNames($lines, [string]$header) {
   }
 }
 
-# "Create a group called "X" and add the new members of the group: a, b, c."
 function Get-ReadmeGroups($lines) {
   foreach ($l in $lines) {
     if ($l -notmatch '(?i)create (?:a |the )?(?:new )?(?:local |security )?group (?:called|named) [\u201C\u201D"'']?([\w .-]+?)[\u201C\u201D"'']?(?:\s|,|\.|$)') { continue }
@@ -238,8 +202,6 @@ function Get-ReadmeServiceText($lines) {
   if ($out) { $out -join "`n" } else { $lines -join "`n" }
 }
 
-# ---------------------------------------------------------------- local / AD account wrappers
-
 function Get-Users {
   if ($IsDC) { Get-ADUser -Filter * | Where-Object { $_.SID.Value -notmatch '-(500|501|502|503)$' } | ForEach-Object { $_.SamAccountName } }
   else { Get-LocalUser | Where-Object { $_.SID.Value -notmatch '-(500|501|503|504)$' } | ForEach-Object { $_.Name } }
@@ -268,8 +230,6 @@ function Remove-FromGroup($u, $g) {
 function Add-ToGroup($u, $g) {
   if ($IsDC) { Add-ADGroupMember -Identity $g -Members $u } else { Add-LocalGroupMember -Group $g -Member $u }
 }
-
-# ---------------------------------------------------------------- installed programs
 
 function Get-Installed {
   $keys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -300,8 +260,6 @@ function Uninstall-App($app) {
     }
   }
 }
-
-# ---------------------------------------------------------------- steps
 
 function Backup {
   New-Item -ItemType Directory -Path $Bak -Force | Out-Null
@@ -557,8 +515,7 @@ $SensitiveRights = [ordered]@{
   SeIncreaseBasePriorityPrivilege = 'Increase scheduling priority'; SeRelabelPrivilege = 'Modify an object label'
   SeSyncAgentPrivilege = 'Synchronize directory service data'; SeMachineAccountPrivilege = 'Add workstations to domain'
 }
-# Who should never hold the rights above: real users / custom groups (S-1-5-21-...), Everyone, Users, Guests,
-# Authenticated Users, Anonymous.
+
 $BroadSids = '^(S-1-5-21-.*|S-1-1-0|S-1-5-32-545|S-1-5-32-546|S-1-5-11|S-1-5-7|S-1-5-4)$'
 
 function Step-Rights {
@@ -611,35 +568,34 @@ function Step-SecOptions {
   $nl  = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
   $wl  = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 
-  # Microsoft network server/client: Digitally sign communications (always)
   Set-Reg $srv RequireSecuritySignature 1; Set-Reg $srv EnableSecuritySignature 1; Set-Reg $srv RestrictNullSessAccess 1
   Set-Reg $wks RequireSecuritySignature 1; Set-Reg $wks EnableSecuritySignature 1; Set-Reg $wks EnablePlainTextPassword 0
   Try-Do 'SMB signing required (server + client)' {
     Set-SmbServerConfiguration -RequireSecuritySignature $true -EnableSecuritySignature $true -Force
     Set-SmbClientConfiguration -RequireSecuritySignature $true -EnableSecuritySignature $true -Force
   }
-  # anonymous access, LM hashes, NTLMv2 only
+
   Set-Reg $lsa LimitBlankPasswordUse 1; Set-Reg $lsa NoLMHash 1; Set-Reg $lsa LmCompatibilityLevel 5
   Set-Reg $lsa RestrictAnonymous 1; Set-Reg $lsa RestrictAnonymousSAM 1; Set-Reg $lsa EveryoneIncludesAnonymous 0
   Set-Reg "$lsa\MSV1_0" NTLMMinClientSec 537395200; Set-Reg "$lsa\MSV1_0" NTLMMinServerSec 537395200
   Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' UseLogonCredential 0
-  # secure channel
+
   Set-Reg $nl RequireSignOrSeal 1; Set-Reg $nl SealSecureChannel 1; Set-Reg $nl SignSecureChannel 1; Set-Reg $nl RequireStrongKey 1
-  # UAC + logon screen
+
   Set-Reg $sys EnableLUA 1; Set-Reg $sys ConsentPromptBehaviorAdmin 2; Set-Reg $sys PromptOnSecureDesktop 1
   Set-Reg $sys EnableInstallerDetection 1; Set-Reg $sys EnableVirtualization 1; Set-Reg $sys FilterAdministratorToken 1
   Set-Reg $sys LocalAccountTokenFilterPolicy 0; Set-Reg $sys DontDisplayLastUserName 1; Set-Reg $sys DisableCAD 0
   Set-Reg $sys InactivityTimeoutSecs 900
   Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\CredUI' EnumerateAdministrators 0
   Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\CredUI' DisablePasswordReveal 1
-  # autologon with a stored password
+
   $w = Get-ItemProperty $wl
   if ($w.DefaultPassword) {
     Warn "Winlogon stores a plain-text DefaultPassword (user $($w.DefaultUserName))."
     if (Ask 'Delete it?') { Remove-ItemProperty $wl -Name DefaultPassword; Log 'removed Winlogon DefaultPassword' }
   }
   Set-Reg $wl AutoAdminLogon '0' String
-  # misc
+
   Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' fAllowToGetHelp 0
   Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' NoDriveTypeAutoRun 255
   Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' NoAutorun 1
@@ -1279,8 +1235,6 @@ function Step-Updates {
     Log 'Windows Update scan started'
   }
 }
-
-# ---------------------------------------------------------------- main
 
 function Main {
   if (-not (Ask 'Forensics Questions answered already?')) { Write-Host 'Do those first.'; return }

@@ -1,246 +1,274 @@
 # Function reference for debian.sh
 
-This document explains each function defined in the script and what it is meant to do. The script is a Debian/Ubuntu hardening and forensic cleanup utility: it audits the system, removes suspicious items, repairs package sources, hardens common services, enforces user and password policies, and secures browser and OS settings.
+This document explains each function in the script and what it is meant to do. The script hardens Debian 12/13, Ubuntu 22.04+ and Linux Mint 21 for CyberPatriot: it audits the system, fixes users, sudo and password policy, removes unwanted packages and backdoors, and locks down services, the firewall and browsers.
 
 ## Overview of the script
 
-The script defines a large set of helper functions that work together in a step-based workflow. The main entry point is `main()`, which runs a sequence of specialized hardening steps such as `audit`, `repos`, `users`, `sudo`, `passwords`, `login`, `firewall`, `kernel`, `packages`, `services`, `browsers`, `backdoors`, `media`, `files`, and `updates`.
+`main` asks before each step, in this order: `audit`, `repos`, `apt_update`, `users`, `sudo`, `passwords`, `login`, `firewall`, `kernel`, `misc`, `packages`, `services`, `browsers`, `backdoors`, `media`, `files`, `updates`. Each step is a function named `step_<name>`.
 
-The explanations below cover every function defined in the script, including the main execution flow and helper routines.
+Run it as root with sudo. `$ME` (you) comes from `SUDO_USER`, so your own account is never deleted or locked. Every change is logged to `/root/cp-log.txt`, and all of `/etc` is backed up to `/root/etc-backup-HHMMSS.tgz` before anything runs.
+
+`source debian.sh` loads the functions without running `main`, which is how single steps are tested.
 
 ---
 
 ## Helper and general-purpose functions
 
+### log
+Prints a timestamped line and appends it to `/root/cp-log.txt`. Every change goes through it, which is what the "Changes this run" summary at the end is built from.
+
+### ask
+Asks a yes/no question. Only an answer starting with `y` counts as yes, so pressing Enter always means no.
+
+### hdr
+Prints a section header.
+
+### in_list
+Checks whether a word is one of the following arguments. Used to compare usernames against the authorized lists.
+
+### installed
+Checks whether a package is installed (via `dpkg-query`).
+
 ### set_kv
-Sets a configuration key in a file. It checks whether the key already exists in a config file; if it does, it replaces the line, otherwise it appends a new line. It also logs the change to the log file. This is used repeatedly throughout the script to enforce secure settings in config files such as `/etc/login.defs`, `/etc/sysctl.conf`, and service configuration files.
+Sets `key value` (or `key = value`) in a config file. If the key is already there, even commented out, the line is replaced; otherwise it is appended. The change is logged. Used for `login.defs`, `pwquality.conf`, `faillock.conf`, `sysctl.conf`, `sshd_config`, `vsftpd.conf`, `php.ini`, the Apache security config and MySQL configs.
+
+### unowned
+Filters a list of paths down to the files that do not belong to any installed package. Used to find cron files, systemd units, startup scripts, sudoers files and programs that someone added by hand.
+
+### review_lines
+Takes `file:line:text` matches and shows them one at a time, asking whether to comment each line out in place. Lines that are already comments are skipped. Used for cron, rc.local, shell startup files, PAM and sudoers.
+
+### review_files
+Shows each file (the first 15 lines of a text file, or its type for a binary) and asks whether to delete it.
+
+### review_units
+Shows the key lines (`Exec...`, `On...`, `Listen...`, `User=`) of each systemd unit and asks whether to stop, disable and delete it, then reloads systemd.
+
+---
+
+## README functions
 
 ### saved_readme
-Searches likely directories for a README or HTML file containing the phrase "Authorized Administrators" or a file name with "Readme" in it. It picks the newest relevant file. This helps the script discover the official CyberPatriot README without requiring the user to enter the data manually.
+Finds a README saved from the browser with Ctrl+S: the newest file on a Desktop, in Downloads or in a home folder whose name contains "readme", or any `.htm`/`.html`/`.mhtml` file that contains "Authorized Administrators".
 
 ### session_env
-Tries to collect the environment variables of a logged-in user session from the process environment of desktop session processes. It searches for processes owned by a user that have `DISPLAY` or `WAYLAND_DISPLAY` set and returns their environment. This is used to run GUI utilities or browser commands in the same session as the user.
+Copies the environment (DISPLAY, Wayland, D-Bus...) of a user's running desktop session, so programs started as that user show up on their screen.
 
 ### as_user
-Executes a command as a target user, preserving a desktop session environment when possible. It uses `runuser` and tries to reuse the current X11/Wayland session environment. If the user has no session, it falls back to a synthetic environment with `HOME`, `USER`, `DISPLAY`, and `XDG_RUNTIME_DIR` values. This is used to run browser and desktop-related actions as the correct user.
+Runs a command as a user inside their desktop session, using `session_env`. If there is no session, it builds a basic environment (HOME, DISPLAY, XAUTHORITY, XDG_RUNTIME_DIR, D-Bus) instead.
 
 ### open_in_browser
-Opens a URL in the browser of a specific user using `xdg-open`, launched through `as_user`. This is used when the script needs the user to sign in to a protected README or website in a logged-in browser session.
+Opens a URL in the user's default browser with `xdg-open`, as that user.
 
 ### browser_dump
-Copies Chromium/Chrome profile data from a given user and launches the browser in headless mode with the copied profile to dump the DOM of a target URL. This is used to bypass filters or sign-in pages when the script needs to read the CyberPatriot README through the browser session that already has the correct login.
+Reads a page through the user's Chromium/Chrome sign-in. It copies only the cookies and `Local State` into a temporary profile, runs the browser headless with `--dump-dom`, prints the page and deletes the copy. This gets past the school's Securly filter, which sends `wget` to a Google sign-in page.
 
 ### fetch_readme
-Attempts to fetch the README from a URL and validate that it contains the expected content. It tries direct download, a browser dump via Chromium if needed, a saved local README, and user guidance prompting them to sign in in the browser. This is the script’s main mechanism for retrieving the authoritative task instructions.
+Downloads the README page with `wget` (and retries without the certificate check). If a filter or sign-in page answers instead, it tries `browser_dump`, then a saved copy (`saved_readme`). If that fails too, it opens the README in your browser so you can sign in, and tries again when you press Enter. Typing `s` skips the README and you type the users yourself.
 
 ### readme_text
-Loads the README content from a supplied file path or by locating a likely file on the desktop or cache. If the README is a `.desktop` link, it reads the URL and fetches the target page. It strips HTML markup and leaves readable text, then returns the final extracted instructions. This is the source text used for parsing authorized users, admins, and critical services.
+Returns the README as plain text. It uses `README=/path` if given. Otherwise it looks for the cached copy `/root/cp-readme.html`, then a saved copy, then the README shortcut on a Desktop. For a `.desktop` shortcut it follows the link (a local file or a web page through `fetch_readme`) and caches a successful download. The HTML is turned into lines: headings start with `== `, tags are removed and entities decoded.
 
 ### readme_names
-Parses user lists from the README text. It looks for headings like “Authorized Administrators” or “Authorized Users,” then extracts valid usernames from the lines underneath while ignoring blank lines, password entries, and non-user-style entries. This generates the `AUTH` and `ADMINS` arrays used in the user-management step.
+Reads the usernames listed under a heading such as "Authorized Administrators:" or "Authorized Users:". It skips `password:` lines and stops at the first line that does not look like a username.
 
 ### readme_groups
 Finds README lines like "Create a group called "X" and add ...: a, b, c" and returns each group name with its members (listed after the colon, or one per line below it). `step_users` shows what it found so it can be corrected before the group is created.
 
 ### readme_service_text
-Extracts the “Critical Services” section from the README when present. If that section is missing, it falls back to the whole README text. This gives the script a list of services the README says must remain active, which helps decide whether to keep, remove, or harden services.
-
-### unowned
-Compares files from the package database against file paths on disk to find files that are not owned by any installed package. It is used to locate suspicious configuration files, cron entries, startup scripts, and rogue binaries added outside normal package management.
-
-### review_lines
-Takes a block of lines with file:line references and shows each suspicious entry. It prompts the user whether to comment out the line in place. This is used for cron jobs, startup scripts, PAM entries, system startup files, and other suspicious config lines that may be malicious.
-
-### review_files
-Displays suspicious files and asks whether they should be deleted. It handles missing files safely and works for both text files and binary files. This function is used commonly for rogue binaries, malicious scripts, policy files, and planted backdoors.
-
-### review_units
-Displays suspicious systemd unit files, prints their key directives, and asks whether to stop, disable, and delete them. It reloads systemd after cleanup. This helps remove persistence hidden in custom service units.
+Returns the README's "Critical Services" section, or the whole README if there is no such section. `step_services` matches against this text.
 
 ---
 
-## Audit and inspection steps
+## Steps
 
 ### step_audit
-Runs a broad system audit and prints key forensic findings. It shows:
-- APT sources
-- Held packages
-- Proxy settings
-- Listening ports
-- UID 0 accounts
-- System accounts with login shells
-- Empty passwords
-- Weak password hashes
-- Duplicate IDs/names
-- `/etc/hosts`
-- World-writable files in `/etc`
-- Enabled systemd services
-
-It pauses so the user can inspect the output before continuing. This step is meant to establish the baseline security state.
-
-### step_backdoors
-Looks for common persistence and backdoor mechanisms:
-- suspicious cron and at jobs
-- custom systemd units
-- rc.local commands
-- shell startup files
-- PAM-based backdoors
-- `/etc/ld.so.preload`
-- SSH authorized keys
-- unexpected SUID/SGID binaries
-- dangerous capabilities
-- non-package binaries in system directories
-- reverse-shell / webshell code patterns
-- suspicious running processes and temp-dir executables
-- package file tampering via `debsums`
-
-It prompts before removing or killing anything. This is the main persistence-removal and malware hunting stage.
+Read-only overview, then waits for Enter:
+- APT sources, held packages and APT proxy settings
+- listening ports
+- UID 0 accounts other than root, and system accounts with a login shell
+- accounts with empty passwords or weak (MD5/DES) password hashes
+- duplicate UIDs, GIDs, user names and group names
+- `/etc/hosts` entries
+- world-writable files in `/etc`
+- enabled services
 
 ### step_repos
-Restores official package repositories based on the detected distro (`ubuntu`, `linuxmint`, or `debian`) and writes the standard apt source configuration back if it has been tampered with. It backs up the old file first and prompts for confirmation. This re-establishes trusted software sources before performing updates.
+Shows the current APT source file for the detected distro (Debian, Ubuntu or Mint, including the newer `.sources` format) and the official one it would write, and asks before writing it. The old file is kept as `.bak`. On Debian with `debian.sources` it also offers to comment out leftover entries in `sources.list`, such as a cdrom line.
 
 ### step_apt_update
-Runs `apt-get update` to refresh the package index and prepare for package installation or security upgrades.
+Runs `apt-get update`.
 
 ### step_users
-Reads the README to parse authorized users/admins and compares them against the system. It prompts the user to confirm or correct the list, creates missing accounts, deletes unauthorized users, manages group memberships, creates the groups the README asks for (with their members), sets passwords, and enforces password aging and lockout settings. It also locks the root password if the user approves.
+Installs sudo if missing. Shows the authorized users and admins read from the README and lets you edit them (you are always included). Then it:
+- offers to delete every account with UID 1000 or higher that is not on the list
+- offers to create README users that do not exist
+- offers to remove anyone who is not a README admin from sudo, admin, wheel, adm, lxd, docker, lpadmin and sambashare, and anyone at all from disk and shadow
+- offers to fix accounts whose primary group is one of those groups
+- offers to add README admins to sudo
+- creates the groups the README asks for, adds their members and offers to remove anyone else. You can also type in groups it missed.
+- asks for one new password for all authorized users except you (blank skips this)
+- sets password aging for each authorized user: maximum 90 days, minimum 7, warning 14, and the account locks if the password stays expired for 30 days
+- asks which accounts must change their password at next login
+- offers to lock the root password
 
 ### step_sudo
-Reviews `/etc/sudoers` and `/etc/sudoers.d` for risky entries such as `NOPASSWD`, `!authenticate`, and overly permissive rules. It removes or warns about suspicious sudoers files, enforces `Defaults use_pty`, and validates the config with `visudo`. This prevents privilege escalation and misconfigured sudo rights.
+Backs up sudoers to `/root/sudoers-backup.tgz`. It shows risky lines one at a time and offers to comment each out: `NOPASSWD`, `!authenticate`, `Defaults` with `!`, and rules for single users (only `%sudo` should have one). It offers to delete sudoers.d files that no package installed. It adds `Defaults use_pty` and fixes the owner and permissions of `/etc/sudoers`. If `visudo -c` fails afterwards, it restores the backup.
 
 ### step_passwords
-Configures password policy and lockout settings:
-- maximum/minimum password age
-- warning period
-- hashing method
-- UMASK
-- inactive account lockout
-- PAM quality requirements and history
-- failed-login lockout with `pam_faillock`
-- no `nullok` password entries
-- `remember=5`
+- `login.defs`: maximum age 90 days, minimum 7, warning 14, SHA512 hashing, UMASK 027
+- new accounts lock if their password stays expired for 30 days
+- pwquality: minimum length 12, at least one upper case letter, lower case letter, digit and symbol
+- faillock: lock for 15 minutes after 5 failed logins, set up through `pam-auth-update`
+- PAM: removes `nullok` (empty passwords), remembers the last 5 passwords
+- offers to lock accounts that have no password
 
-It also prints a reminder to test `su - $ME` in a new terminal before continuing.
+At the end it tells you to test `su - $ME` in a new terminal before closing the root shell, because a broken PAM setup can lock you out.
 
 ### step_login
-Disables guest sessions and automatic login for the common login managers: LightDM, GDM, and SDDM. For GDM it also optionally hides the user list on the login screen. This reduces unauthorized local access and keeps user identification visible.
+- LightDM (Mint, Debian MATE): guest login off, autologin commented out
+- GDM (Debian GNOME): automatic and timed login off. It also offers to hide the user list on the login screen.
+- SDDM (KDE): autologin commented out
 
 ### step_firewall
-Installs `ufw`, sets default deny rules for incoming traffic, allows outbound traffic, enables logging, and enables the firewall. This restricts network exposure.
+Installs ufw, denies incoming and allows outgoing traffic, turns logging on and enables it. Services kept in `step_services` open their own ports.
 
 ### step_kernel
-Applies a hardened kernel configuration via `/etc/sysctl.conf` with secure defaults (such as disabling IP forwarding, disabling redirects, enabling TCP syncookies, and turning on ASLR). It corrects ownership and permission bits for sensitive files and ensures `/tmp` is sticky. This is a baseline hardening step for OS-level security.
+Writes hardened values to `/etc/sysctl.conf` and loads them:
+- SYN cookies on
+- no IP forwarding, ICMP redirects or source routing
+- reverse-path filtering on, and odd ("martian") packets logged
+- broadcast pings ignored
+- full ASLR
+- protected symlinks and hardlinks
+- no core dumps from SUID programs
+
+It also fixes the owner and permissions of shadow/gshadow (640), passwd/group (644, including their `-` backups) and sudoers (440), and makes `/tmp` and `/var/tmp` sticky (1777).
 
 ### user_gsettings
-Applies a GNOME/Cinnamon/MATE DConf setting as the active user via `gsettings`. It is a small wrapper for setting desktop security preferences like screen lock, idle time, and update policies. It is used to avoid repeated boilerplate in `step_misc` and `step_updates`.
+Runs `gsettings set` as `$ME` inside their D-Bus session. Used by `step_misc` and `step_updates` for desktop settings.
 
 ### step_misc
-Installs and enables `auditd` and AppArmor, masks `ctrl-alt-del`, fixes home directory permissions to `750`, and sets common screensaver/idle-lock settings for desktops. It also reports files with no owner or group, which can signal planted or orphaned files. This step strengthens session security and auditing.
-
-### step_packages
-Audits installed packages and removes software that is suspicious or prohibited. It:
-- removes packages installed by hand after OS installation
-- purges non-repo `.deb` installations
-- removes known bad tools (e.g., password crackers, network scanners)
-- uninstalls flatpak and snap apps that are not needed
-- runs autoremove
-
-It uses user confirmation for each item, minimizing accidental deletion of required packages.
-
-### step_services
-Evaluates which services should remain installed and active based on the README’s “Critical Services” section. It matches service names to expected requirements and prompts the user to keep, purge, or skip each service. If kept, it invokes the matching hardening function (`harden_ssh`, `harden_apache2`, etc.). This keeps the system lean and valid to the task’s requirements.
-
-### step_media
-Finds media files in likely user and service directories, prints them, and asks whether to delete them. It avoids `/opt/CyberPatriot` paths so the script does not delete necessary challenge materials. This helps remove unnecessary or suspicious media content. 
-
-### step_files
-Finds files likely containing passwords, secrets, customer information, packet captures, or disguised executables. It also searches for files named like documents or images that are actually ELF executables disguised as harmless files. It prompts before deletion. This is an anti-data-leak and forensics cleanup workflow.
-
-### step_updates
-Unholds blocked packages, installs `unattended-upgrades`, enables automatic updates, configures update timers, and runs a full system upgrade. It also checks GUI update settings for Mint/GNOME and prints reminder notes about update managers. This keeps the OS current and prevents stale or vulnerable packages from remaining installed.
-
-### main
-The top-level entry point. It checks that the script is being run as root, confirms the user has answered forensics questions, creates a log, backs up `/etc`, and then prompts to run each major step in order. After the selected steps complete, it prints a summary of changes from the log. This is the orchestrator for the whole script.
-
----
-
-## Security hardening functions
-
-### harden_ssh
-Applies secure SSH settings: disables root login, blocks empty passwords, disables X11 forwarding, limits auth retries, shortens login grace time, disables hostbased auth and rhosts, ensures PAM is used, and allows SSH from the firewall. It then validates the config and restarts the service. This hardens the system against brute-force and remote compromise.
-
-### harden_vsftpd
-Sets secure VSFTPD defaults: disables anonymous login, disallows upload and write access for anonymous users, enables local users, enforces chroot, enables logging, and restarts the service. It also opens only necessary firewall rules for FTP. This makes file transfer more controlled and less risky.
-
-### harden_php
-Edits the PHP INI files to disable dangerous features such as `expose_php`, `display_errors`, `allow_url_include`, `allow_url_fopen`, and dangerous execution functions like `exec`, `system`, and `shell_exec`. It restarts PHP-FPM if present. This reduces the risk of code injection and command execution vulnerabilities.
-
-### harden_apache2
-Applies secure Apache settings by disabling version leakage and server signatures, removing directory indexing, and calling `harden_php` to secure PHP behind Apache. It validates the config and restarts Apache. This reduces information disclosure and exploitability in the web server.
-
-### harden_nginx
-Disables server version headers and directory autoindexing in Nginx, then invokes `harden_php` to secure PHP if applicable. It validates the nginx config and reloads the service. This reduces web fingerprinting and unsafe file exposure.
-
-### smb_set
-A helper for setting Samba config options in `/etc/samba/smb.conf`. It checks if the key already exists and updates it; otherwise, it inserts it in the `[global]` section. This keeps Samba security settings consistent and avoids manual edits.
-
-### harden_samba
-Disables guest access, restricts anonymous access, disables guest shares, requires SMB2 or newer, requires SMB encryption, and restarts `smbd` if the configuration validates. This prevents insecure share access and enforces encrypted file transfers.
-
-### harden_mysql
-Limits MySQL/MariaDB network exposure by binding to `127.0.0.1` when the user confirms, disables local-infile, and removes anonymous users, remote root logins, and the default test database. This reduces the attack surface of database services.
-
-### ff_policy
-Builds a Firefox policy JSON object with several locked settings, including telemetry disablement, popup blocking, tracking protection, HTTPS-only enforcement, and safe browsing preference enforcement. It is used to create browser policy files that prevent users from bypassing security settings.
-
-### step_browsers
-Protects Chrome/Chromium and Firefox by writing managed policy files (for example, `cp.json` or `policies.json`) to system or distribution directories, locking in secure browsing settings, and writing `user.js` values for Firefox profiles. It also warns if browsers are still open because active browser sessions could overwrite profile settings. This enforces safer browser configurations.
-
----
-
-## Service selection and helper routines
-
-### svc_wanted
-Determines whether a service is likely required from the README content. It matches the service name and its known configuration patterns against the text extracted from the README. It can also consider grouped services such as Apache/Nginx or database packages. This supports the automated keep/purge decision in `step_services`.
-
----
-
-## Additional function summaries
+Installs and enables auditd and enables AppArmor. It masks Ctrl-Alt-Del, sets home folders to 750, and turns on the screen lock after 5 minutes idle for Cinnamon, GNOME and MATE. Then it lists files with no owner or group (planted or left over).
 
 ### apt_installed_by_hand
-Reads historical APT logs to list packages that were installed manually after the operating system was first installed. This lets the script identify packages not part of the baseline and ask whether to remove them.
+Reads the APT history logs and lists packages that were installed by hand (not as dependencies) after the OS was installed, with the date.
+
+### step_packages
+- packages from `apt_installed_by_hand`: asks to purge each, never offering the script's own packages (`SELF_PKGS`)
+- lists packages added since the OS install, from the installer's package list, for information
+- packages installed from a `.deb` file instead of a repo: asks to purge each
+- known prohibited packages (`BAD_PKGS`): asks to purge each
+- Flatpak apps (system and per-user) and Snap apps (except base and system snaps): asks to remove each
+- runs `apt-get autoremove`
+
+### svc_wanted
+Decides whether the README needs a service. It is needed if the README names it, for example "ssh" or "apache". If the README only names the kind of service, for example "web server", "FTP" or "database", every service of that kind is needed unless the README names a specific one of them.
+
+### step_services
+Shows the README's critical services. For each installed service in `SERVICES`, the default answer is keep when `svc_wanted` says the README needs it, and purge when it does not. Without a README there is no default. Keep runs the matching `harden_*` function and opens its firewall port. Purge removes the package. If the README names a service that is not installed, it says so.
+
+### ff_policy
+Prints the Firefox `policies.json`: telemetry and studies off, pop-ups blocked, no saved logins, tracking protection, HTTPS-only, and the `FF_PREFS` preferences locked.
+
+### step_browsers
+Warns if a browser is still running.
+- Chromium/Chrome: offers to delete existing policy files (planted ones can turn off Safe Browsing or force-install extensions), then writes `cp.json` with `CHROME_POLICY` into each managed policy folder.
+- Firefox and Firefox ESR: writes `policies.json` (printing and backing up any old one), and writes `user.js` with `FF_PREFS` into every profile.
+
+Check `chrome://policy` and `about:policies` afterwards.
+
+### step_backdoors
+Looks for persistence. It asks before commenting out, deleting, changing or killing anything:
+- cron: suspicious lines, every user crontab entry, and cron files no package installed. at jobs are only listed (remove them with `atrm`).
+- systemd units no package installed, including per-user units
+- `rc.local` commands
+- shell startup files and autostart entries: suspicious lines and aliases (sudo, su, passwd...), plus startup files no package installed
+- PAM backdoors (`pam_exec`, `sufficient pam_permit`) and `/etc/ld.so.preload`
+- SSH `authorized_keys` files
+- SUID/SGID on programs that can give a shell (`GTFO`) or that no package installed, and dangerous file capabilities
+- programs in bin folders that no package installed
+- files containing reverse-shell or web shell code (`STRONG`)
+- executable or hidden files in temp folders (listed only)
+- listening processes that are shells, netcat, scripting languages or telnet, or that run from temp/home folders or deleted files
+- processes running from temp folders or deleted files
+- optionally, `debsums` to find package files that were changed
+
+If you kill something and it comes back, its autostart is still somewhere, so run the step again.
+
+### step_media
+Lists media files (mp3, mp4, wav, mkv, ...) in /home, /root, /srv, /var/www, /opt and /tmp, skipping `/opt/CyberPatriot`, and asks once whether to delete all of them.
+
+### step_files
+- Files with passwords or personal data. It matches file names (password, cred, secret, `.kdbx`, ssn, credit, customer, `.pcap`) and file contents (`password:` or `password=`, SSN-shaped and credit-card-shaped numbers).
+- Programs disguised as documents, pictures or media: files with those extensions that are really Linux (ELF) programs.
+
+Each file is reviewed with `review_files`, so answer forensics questions about these files first.
+
+### step_updates
+- offers to unhold each held package
+- installs unattended-upgrades, sets daily update checks, downloads and installs, and enables the security updates origin
+- flags `APT::Periodic` settings that turn updates off
+- unmasks and enables the APT timers
+- turns on automatic updates in GNOME Software and Mint Update Manager
+- runs `apt-get full-upgrade`
+
+It reminds you to check the update settings in the GUI too.
+
+### main
+Checks it runs as root and asks whether the Forensics Questions are answered (it stops if not). It backs up `/etc`, then asks before each step in order. At the end it prints the changes from this run and how to restore one file from the backup.
 
 ---
 
-## Pattern constants and configuration arrays
+## Service hardening functions
 
-These are not functions, but they are important supporting pieces in the script:
+These run from `step_services` when you keep a service.
 
-- `SUS`: suspicious command patterns used to detect malicious cron jobs, startup commands, and shell injections.
-- `STRONG`: stronger malicious patterns used to find reverse shells and webshell code.
-- `GTFO`: suspicious executable names that should be treated as non-standard or risky.
-- `BAD_PKGS`: known prohibited packages such as password crackers, scanners, and offensive security tools.
-- `SELF_PKGS`: packages the script intentionally keeps because it installs or uses them itself.
-- `FF_PREFS`: Firefox preferences to enforce in `user.js`.
-- `CHROME_POLICY`: Chrome managed policy values.
-- `SERVICES`: list of services the script audits.
-- `SVC_RE`: regex patterns for matching services in README text.
-- `SVC_KIND`: service family groupings used by `svc_wanted`.
+### harden_ssh
+No root login, no empty passwords, no X11 forwarding, 3 auth tries, 60-second login grace time, no host-based or rhosts auth, PAM on. If `sshd_config` includes `sshd_config.d`, the same settings also go into `00-cp.conf`, which is read first and wins. Other drop-in files are printed for you to check. It tests the config, restarts SSH and opens port 22.
 
-These arrays and regex values support the script’s automated logic but are not functions by themselves.
+### harden_vsftpd
+No anonymous login, upload or folder creation. Local users on and kept in their home folder (chroot), transfer logging on. It restarts vsftpd and opens port 21.
+
+### harden_php
+In every Apache and PHP-FPM `php.ini`: `expose_php`, `display_errors`, `allow_url_include` and `allow_url_fopen` off, and the functions that run commands (`exec`, `system`, `shell_exec`, `passthru`, `proc_open`, `popen`, `pcntl_exec`) disabled. It restarts PHP-FPM.
+
+### harden_apache2
+`ServerTokens Prod`, `ServerSignature Off`, `TraceEnable Off`, and directory listings (`Indexes`) removed. It runs `harden_php`, restarts Apache if the config test passes and opens ports 80 and 443.
+
+### harden_nginx
+`server_tokens off` and `autoindex off`. It runs `harden_php`, reloads nginx if `nginx -t` passes and opens ports 80 and 443.
+
+### smb_set
+Sets one option in the `[global]` section of `/etc/samba/smb.conf`, replacing it if it is already there.
+
+### harden_samba
+No guest mapping, `restrict anonymous = 2`, no guest user shares, SMB2 minimum, encryption required, and `guest ok`/`public` turned off on every share. It restarts Samba if `testparm` passes and opens the Samba ports.
+
+### harden_mysql
+Offers to bind MySQL/MariaDB to 127.0.0.1 and turns off `local-infile`. It lists the database users and offers to delete anonymous users, remote root logins and the test database, then restarts the server.
+
+---
+
+## Pattern constants and configuration
+
+These are not functions, but the steps rely on them:
+
+- `SUS`: suspicious command patterns (netcat, `/dev/tcp`, `bash -i`, piping downloads into a shell, `LD_PRELOAD`...) for cron, rc.local and startup files
+- `STRONG`: reverse shell and web shell code, used to search files
+- `GTFO`: programs that can give a root shell when they are SUID
+- `BAD_PKGS`: prohibited packages (password crackers, scanners, sniffers, telnet/rsh servers, games, torrent clients)
+- `SELF_PKGS`: packages the script installs itself, so `step_packages` never offers them
+- `FF_PREFS` / `CHROME_POLICY`: browser settings written by `step_browsers`
+- `SERVICES`: the services `step_services` reviews
+- `SVC_RE` / `SVC_KIND`: README words for each service and for each kind of service, used by `svc_wanted`
+- `README_CACHE`: `/root/cp-readme.html`, the saved README
 
 ---
 
 ## Execution flow summary
 
-The script’s heart is:
-
-1. `main()` checks permissions and starts the audit.
-2. `readme_text()` extracts instructions from the README.
-3. The script runs a series of hardening steps, one by one.
-4. `step_backdoors()` removes persistence and suspicious files.
-5. `step_users()`, `step_sudo()`, and `step_passwords()` lock down identity and privilege management.
-6. `step_services()`, `step_browsers()`, and `step_firewall()` secure network and software exposure.
-7. `step_updates()` ensures the system stays current.
-
-This makes the script a full-image hardening checklist designed for a CyberPatriot-style challenge environment.
+1. `main` checks it runs as root and that the forensics questions are done, then backs up `/etc`.
+2. `readme_text` reads the README the first time a step needs it, and caches it.
+3. Each step runs only if you say yes, and asks again before deleting, purging or killing anything.
+4. The log and the `/etc` backup let you undo any change that costs points.

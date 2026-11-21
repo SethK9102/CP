@@ -40,6 +40,7 @@ If the download fails, open the link in the browser and run the downloaded file 
 - Log: `C:\cp-log.txt`
 - Backups: `C:\cp-backup-HHMMSS`. The undo commands are printed at the end of the run.
 - If it can't read the README, open the README, press Ctrl+S to save it to the Desktop, and press Enter.
+- What each function does: [windows-functions.md](windows-functions.md)
 
 ## Changing a script
 

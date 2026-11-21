@@ -168,8 +168,6 @@ readme_names() {
     {print $1}' <<< "$1"
 }
 
-# "Create a group called "X" and add the new members of the group: a, b, c."  ->  X|a b c
-# Members after the colon, or one per line below it when the line ends with the colon.
 readme_groups() {
   perl -ne '
     s/\xe2\x80[\x98\x99\x9c\x9d]/"/g;
