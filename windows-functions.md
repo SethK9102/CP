@@ -25,6 +25,9 @@ Prints a timestamped line in green and appends it to `C:\cp-log.txt`. Every chan
 ### Ask
 Asks a yes/no question. Only an answer starting with `y` counts as yes, so pressing Enter always means no.
 
+### Read-Names
+Reads a username list in `Step-Users`. A `y`, `yes`, `n` or `no` there is almost always a slip, and would replace the whole list, so it asks again.
+
 ### Hdr / Warn
 Print a cyan section header or a yellow warning.
 

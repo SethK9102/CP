@@ -201,7 +201,7 @@ Looks for persistence. It asks before commenting out, deleting, changing or kill
 - SSH `authorized_keys` files
 - SUID/SGID on programs that can give a shell (`GTFO`) or that no package installed, and dangerous file capabilities
 - programs in bin folders that no package installed
-- files containing reverse-shell or web shell code (`STRONG`)
+- files containing reverse-shell or web shell code (`STRONG`). In `/etc` only files no package installed are offered, and the script never offers its own file.
 - executable or hidden files in temp folders (listed only)
 - listening processes that are shells, netcat, scripting languages or telnet, or that run from temp/home folders or deleted files
 - processes running from temp folders or deleted files
@@ -213,7 +213,7 @@ If you kill something and it comes back, its autostart is still somewhere, so ru
 Lists media files (mp3, mp4, wav, mkv, ...) in /home, /root, /srv, /var/www, /opt and /tmp, skipping `/opt/CyberPatriot`, and asks once whether to delete all of them.
 
 ### step_files
-- Files with passwords or personal data. It matches file names (password, cred, secret, `.kdbx`, ssn, credit, customer, `.pcap`) and file contents (`password:` or `password=`, SSN-shaped and credit-card-shaped numbers).
+- Files with passwords or personal data. It matches file names (password, cred, secret, `.kdbx`, ssn, credit, customer, `.pcap`) and file contents (`password:` or `password=`, SSN-shaped and credit-card-shaped numbers). READMEs are left out, because the CyberPatriot README lists passwords.
 - Programs disguised as documents, pictures or media: files with those extensions that are really Linux (ELF) programs.
 
 Each file is reviewed with `review_files`, so answer forensics questions about these files first.

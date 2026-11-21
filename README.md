@@ -6,7 +6,7 @@ Our team's CyberPatriot hardening scripts.
 | --- | --- |
 | [debian.sh](debian.sh) | Debian 12/13, Ubuntu 22.04+, Linux Mint 21 |
 | [windows.ps1](windows.ps1) | Windows 10/11 and Windows Server, including domain controllers |
-| freebsd | Planned |
+| [freebsd.sh](freebsd.sh) | FreeBSD 14 and 15 |
 
 Answer the Forensics Questions before running a script. Cleaning up can delete what they ask about.
 
@@ -44,6 +44,23 @@ If the download fails, open the link in the browser and run the downloaded file 
 - Run one step again: add `-Step Backdoors` to the last line (no other prompts)
 - What each function does: [windows-functions.md](windows-functions.md)
 
+## FreeBSD
+
+As root (`su -`, or put `sudo` in front of the second line):
+
+```
+fetch https://gjjb.de/cp-freebsd.sh
+sh cp-freebsd.sh
+```
+
+If the school filter breaks the download with a certificate error, add `--no-verify-peer` after `fetch`.
+
+- Log: `/root/cp-log.txt`
+- Backup of `/etc`, `/usr/local/etc` and `/boot/loader.conf`: `/root/etc-backup-HHMMSS.tgz`. Undo one file with `tar xzf <backup> -C / etc/<path>`
+- If it can't find the README, save it from the browser to the Desktop, or run `README=/path/to/README.html sh cp-freebsd.sh`
+- Run one step again: `sh cp-freebsd.sh backdoors` (no other prompts)
+- What each function does: [freebsd-functions.md](freebsd-functions.md)
+
 ## Changing a script
 
-Test in a container or throwaway VM, never on a competition image. `bash -n debian.sh` catches syntax errors, and `source debian.sh` loads the functions without running anything, so you can call one step. Then copy it to gjjb.de so the links above get the new version.
+Test in a container or throwaway VM, never on a competition image. `bash -n debian.sh` catches syntax errors, and `source debian.sh` loads the functions without running anything, so you can call one step. For freebsd.sh that is `sh -n freebsd.sh` and `CP_NO_MAIN=1 . ./freebsd.sh`. Then copy it to gjjb.de so the links above get the new version.

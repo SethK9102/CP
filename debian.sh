@@ -249,7 +249,7 @@ step_audit() {
 }
 
 SUS='(\<nc\>|\<ncat\>|netcat|socat|/dev/(tcp|udp)/|bash -i|sh -i|mkfifo|python[0-9.]* -c|perl -e|php -r|ruby -e|base64 -d|curl |wget |telnet |\| *(ba)?sh\>|chmod [0-7+]*s|/dev/shm|LD_PRELOAD)'
-STRONG='/dev/(tcp|udp)/|bash -i|sh -i *[>&]|mkfifo|nc(at)? .*-[ec] |nc\.traditional|socat .*exec|pty\.spawn|os\.dup2|fsockopen|eval\(\$_|shell_exec\(|passthru\('
+STRONG='/dev/(tcp|udp)/|bash -i|sh -i *[>&]|mkfifo [^ ;]+ *(;|&&|\|)|nc(at)? .*-[ec] |nc\.traditional|socat .*exec|pty\.spawn|os\.dup2|fsockopen|eval\(\$_|shell_exec\(|passthru\('
 GTFO='^(bash|sh|dash|zsh|ash|busybox|find|vi|vim|vim\.basic|vim\.tiny|nano|ed|less|more|python[0-9.]*|perl|ruby|php[0-9.]*|lua.*|node|cp|mv|tee|dd|cat|base64|xxd|env|awk|gawk|mawk|sed|tar|zip|nmap|nc|socat|wget|curl|gdb|strace|systemctl|chmod|chown|rsync|git|make|expect|tclsh.*)$'
 
 unowned() {
@@ -365,8 +365,9 @@ step_backdoors() {
   mapfile -t list < <(find /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin -xdev -type f 2>/dev/null | unowned)
   review_files "${list[@]}"
   hdr "Files containing reverse-shell / webshell code"
-  mapfile -t list < <(grep -rlIsE "$STRONG" --exclude-dir=.cache --exclude-dir=.mozilla \
-    /home /root /opt /usr/local /srv /var/www /tmp /var/tmp /dev/shm /etc)
+  mapfile -t list < <({ grep -rlIsE "$STRONG" --exclude-dir=.cache --exclude-dir=.mozilla \
+      /home /root /opt /usr/local /srv /var/www /tmp /var/tmp /dev/shm
+    grep -rlIsE "$STRONG" /etc | unowned; } | grep -vxF "$(readlink -f "$0")")
   review_files "${list[@]}"
   hdr "Executable or hidden files in temp dirs"
   find /tmp /var/tmp /dev/shm -mindepth 1 \( -name '.*' -o -type f -perm -u+x \) \
@@ -599,7 +600,7 @@ step_sudo() {
   local -a list
   tar czf "$bak" /etc/sudoers /etc/sudoers.d 2>/dev/null
   echo "Risky lines: NOPASSWD, !authenticate, Defaults with '!', rules for single users (should be %sudo only):"
-  review_lines "$(grep -nHsE 'NOPASSWD|!authenticate|^[[:space:]]*Defaults.*!|^[[:space:]]*[a-z_][a-z0-9_-]*[[:space:]]+[^=]+=' \
+  review_lines "$(grep -nHsE 'NOPASSWD|!authenticate|^[[:space:]]*Defaults[^[:space:]]*[[:space:]].*![a-z_]|^[[:space:]]*[a-z_][a-z0-9_-]*[[:space:]]+[^=]+=' \
       /etc/sudoers /etc/sudoers.d/* | grep -vE '^[^:]+:[0-9]+:[[:space:]]*root[[:space:]]|^/etc/sudoers.d/mintupdate:')"
   hdr "sudoers.d files not from any package"
   mapfile -t list < <(find /etc/sudoers.d -type f ! -name README 2>/dev/null | unowned)
@@ -1130,7 +1131,7 @@ step_files() {
       -o -iname '*.pcap' -o -iname '*.pcapng' \) ! -path '*/.mozilla/*' ! -path '*/.cache/*' ! -path '*/.config/*' 2>/dev/null
     grep -rlIsE '\<[0-9]{3}-[0-9]{2}-[0-9]{4}\>|\<[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}[ -][0-9]{4}\>|passw(or)?d *[:=]' \
       --exclude-dir=.mozilla --exclude-dir=.cache --exclude-dir=.config --exclude-dir=.local /home /root /srv /opt
-  } | sort -u)
+  } | grep -viE '/[^/]*readme[^/]*$' | grep -vxF "$(readlink -f "$0")" | sort -u)
   review_files "${list[@]}"
 
   hdr "Programs disguised as documents, pictures or media (answer forensics questions about them first)"

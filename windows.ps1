@@ -33,6 +33,13 @@ function Log([string]$m) {
 function Ask([string]$q) { (Read-Host "$q [y/N]") -match '^\s*[yY]' }
 function Hdr([string]$t) { Write-Host "`n===== $t =====" -ForegroundColor Cyan }
 function Warn([string]$t) { Write-Host $t -ForegroundColor Yellow }
+function Read-Names([string]$q) {
+  while ($true) {
+    $a = (Read-Host $q).Trim()
+    if ($a -notmatch '^(y|yes|n|no)$') { return $a }
+    Warn 'That looks like a yes/no answer. Press Enter to use the lists, or type the usernames.'
+  }
+}
 function InList($x, $list) { foreach ($y in $list) { if ($x -ieq $y) { return $true } }; return $false }
 function Show($x) {
   if ($x) { $x | Format-Table -AutoSize -Wrap | Out-String -Width 220 | Write-Host }
@@ -329,10 +336,10 @@ function Step-Users {
   Write-Host "  admins: $($admins -join ' ')"
   Write-Host "  users : $($users -join ' ')"
   Write-Host 'Also include any account the README tells you to create.'
-  $a = Read-Host 'Enter = use the lists above, or type ALL authorized usernames (admins too), space-separated'
-  $all = if ($a.Trim()) { @($a.Trim() -split '\s+') } else { @($admins) + @($users) }
-  $b = Read-Host 'Enter = use README admins, or type the admins'
-  if ($b.Trim()) { $admins = @($b.Trim() -split '\s+') }
+  $a = Read-Names 'Enter = use the lists above, or type ALL authorized usernames (admins too), space-separated'
+  $all = if ($a) { @($a -split '\s+') } else { @($admins) + @($users) }
+  $b = Read-Names 'Enter = use README admins, or type the admins'
+  if ($b) { $admins = @($b -split '\s+') }
   if (-not $all.Count) { Warn 'No users entered, skipping.'; return }
   $script:Auth = @(@($all) + $script:Me | Sort-Object -Unique)
   $script:Admins = @(@($admins) + $script:Me | Sort-Object -Unique)
