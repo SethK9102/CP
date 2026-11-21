@@ -29,6 +29,9 @@ Checks whether a word is one of the following arguments. Used to compare usernam
 ### installed
 Checks whether a package is installed (via `dpkg-query`).
 
+### purge
+Purges a package. It simulates the purge first. If apt would also remove other packages (ones that depend on it, such as a desktop meta-package), it lists them and asks again. Every purge in the script goes through it.
+
 ### set_kv
 Sets `key value` (or `key = value`) in a config file. If the key is already there, even commented out, the line is replaced; otherwise it is appended. The change is logged. Used for `login.defs`, `pwquality.conf`, `faillock.conf`, `sysctl.conf`, `sshd_config`, `vsftpd.conf`, `php.ini`, the Apache security config and MySQL configs.
 
@@ -75,6 +78,9 @@ Reads the usernames listed under a heading such as "Authorized Administrators:" 
 ### readme_groups
 Finds README lines like "Create a group called "X" and add ...: a, b, c" and returns each group name with its members (listed after the colon, or one per line below it). `step_users` shows what it found so it can be corrected before the group is created.
 
+### readme_todo
+Picks out README lines that ask you to do something (create, install, update, keep, must, should, prohibited, ...), leaving out the standard CyberPatriot boilerplate. `step_audit` prints them as a checklist, because the script does not handle all of them.
+
 ### readme_service_text
 Returns the README's "Critical Services" section, or the whole README if there is no such section. `step_services` matches against this text.
 
@@ -92,6 +98,7 @@ Read-only overview, then waits for Enter:
 - `/etc/hosts` entries
 - world-writable files in `/etc`
 - enabled services
+- the README's to-do list from `readme_todo`
 
 ### step_repos
 Shows the current APT source file for the detected distro (Debian, Ubuntu or Mint, including the newer `.sources` format) and the official one it would write, and asks before writing it. The old file is kept as `.bak`. On Debian with `debian.sources` it also offers to comment out leftover entries in `sources.list`, such as a cdrom line.
@@ -162,13 +169,13 @@ Reads the APT history logs and lists packages that were installed by hand (not a
 - packages installed from a `.deb` file instead of a repo: asks to purge each
 - known prohibited packages (`BAD_PKGS`): asks to purge each
 - Flatpak apps (system and per-user) and Snap apps (except base and system snaps): asks to remove each
-- runs `apt-get autoremove`
+- shows what `apt-get autoremove` would remove and asks first. Say no if desktop programs are in the list.
 
 ### svc_wanted
 Decides whether the README needs a service. It is needed if the README names it, for example "ssh" or "apache". If the README only names the kind of service, for example "web server", "FTP" or "database", every service of that kind is needed unless the README names a specific one of them.
 
 ### step_services
-Shows the README's critical services. For each installed service in `SERVICES`, the default answer is keep when `svc_wanted` says the README needs it, and purge when it does not. Without a README there is no default. Keep runs the matching `harden_*` function and opens its firewall port. Purge removes the package. If the README names a service that is not installed, it says so.
+Shows the README's critical services. For each installed service in `SERVICES`, the default answer is keep when `svc_wanted` says the README needs it, and purge when it does not. Without a README there is no default. Keep runs the matching `harden_*` function and opens its firewall port. Purge removes the package through `purge`, which warns if other packages would go with it. If the README names a service that is not installed, it says so.
 
 Then it goes through default services that are rarely needed (`EXTRA_SVC`: avahi, cups-browsed, rpcbind, dnsmasq, slapd, the DHCP server and rsync). For each one that is enabled or running it offers to disable it, defaulting to keep when the README mentions it.
 

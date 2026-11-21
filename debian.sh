@@ -12,6 +12,18 @@ hdr() { printf '\n===== %s =====\n' "$*"; }
 in_list() { local x=$1 y; shift; for y; do [[ $x == "$y" ]] && return 0; done; return 1; }
 installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
 
+purge() {
+  local p=$1
+  local -a extra
+  mapfile -t extra < <(apt-get -s purge "$p" 2>/dev/null | awk '/^(Purg|Remv) / {sub(/:.*/, "", $2); print $2}' | grep -vxF "${p%%:*}")
+  if ((${#extra[@]})); then
+    echo "  Purging $p also removes ${#extra[@]} other package(s): ${extra[*]:0:25}$( ((${#extra[@]} > 25)) && echo ' ...')"
+    echo "  (if one of them is a desktop meta-package, a later autoremove can take much of the desktop with it)"
+    ask "  Purge $p and those?" || return 1
+  fi
+  apt-get purge -y "$p" && log "purged $p${extra[*]:+ (also removed: ${extra[*]})}"
+}
+
 set_kv() {
   local f=$1 k=$2 v=$3 s=${4:- }
   [[ -f $f ]] || return 0
@@ -185,6 +197,11 @@ readme_groups() {
     END { print "$g|$m\n" if defined $g }' <<< "$1" | sed 's/| /|/'
 }
 
+readme_todo() {
+  grep -iE '\<(create|install|update|up.to.date|keep|kept|enable|disable|default|must|should|not authori[sz]ed|prohibited|remove)\>' <<< "$1" |
+    grep -viE 'forensics|unique identifier|scoring report|CCS Client|time ?zone|JavaScript|Stop Scoring|home directories|auto-?login|scoring engine'
+}
+
 readme_service_text() {
   local s
   s=$(awk '
@@ -222,6 +239,12 @@ step_audit() {
   find /etc -xdev -type f -perm -0002 2>/dev/null
   hdr "Enabled services (look for anything odd)"
   systemctl list-unit-files --type=service --state=enabled --no-legend 2>/dev/null | awk '{print $1}' | xargs
+  local todo
+  todo=$(readme_todo "$(readme_text)")
+  if [[ -n $todo ]]; then
+    hdr "README instructions to check off (the script does not do all of these)"
+    sed 's/^/  - /' <<< "$todo"
+  fi
   read -rp "Press Enter to continue..."
 }
 
@@ -759,7 +782,7 @@ step_packages() {
     d=${line%% *} p=${line#* }
     installed "$p" || continue
     in_list "$p" "${SELF_PKGS[@]}" && continue
-    ask "$p (installed $d). Purge?" && apt-get purge -y "$p" && log "purged $p"
+    ask "$p (installed $d). Purge?" && purge "$p"
   done
   if [[ -f /var/log/installer/initial-status.gz ]]; then
     hdr "Packages added since the OS was installed (kernels and libraries are normal)"
@@ -769,13 +792,13 @@ step_packages() {
   fi
   hdr "Packages from a .deb file, not from any repo"
   while read -r p <&3; do
-    ask "Purge $p?" && apt-get purge -y "$p" && log "purged $p"
+    ask "Purge $p?" && purge "$p"
   done 3< <(apt list --installed 2>/dev/null | awk -F/ '/,local\]/ {print $1}')
 
   hdr "Known prohibited software"
   for p in "${BAD_PKGS[@]}"; do
     installed "$p" || continue
-    ask "Purge $p?" && apt-get purge -y "$p" && log "purged $p"
+    ask "Purge $p?" && purge "$p"
   done
 
   if command -v flatpak >/dev/null; then
@@ -797,7 +820,14 @@ step_packages() {
       ask "Remove snap $p?" && snap remove --purge "$p" && log "removed snap $p"
     done 3< <(snap list 2>/dev/null | tail -n +2)
   fi
-  apt-get autoremove -y
+  hdr "Packages nothing needs any more (apt-get autoremove)"
+  mapfile -t list < <(apt-get -s autoremove 2>/dev/null | awk '/^Remv / {sub(/:.*/, "", $2); print $2}')
+  if ((${#list[@]})); then
+    echo "${#list[@]} package(s): ${list[*]:0:40}$( ((${#list[@]} > 40)) && echo ' ...')"
+    ask "Remove them? (say no if desktop programs are in the list)" && apt-get autoremove -y && log "autoremove: ${list[*]}"
+  else
+    echo "  none"
+  fi
 }
 
 harden_ssh() {
@@ -1060,7 +1090,7 @@ step_services() {
             *) echo "No auto-hardening for $p, check its config by hand." ;;
           esac
           log "kept $p" ;;
-      p*) apt-get purge -y "$p" && log "purged $p" ;;
+      p*) purge "$p" ;;
     esac
   done
 

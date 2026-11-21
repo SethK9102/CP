@@ -180,7 +180,7 @@ function Get-ReadmeGroups($lines) {
 
 function Get-ReadmeTodo($lines) {
   $lines | Where-Object {
-    $_ -match '(?i)\b(create|install|update|up-to-date|keep|enable|disable|default|must|should|not authori[sz]ed|prohibited|remove)\b' -and
+    $_ -match '(?i)\b(create|install|update|up.to.date|keep|kept|enable|disable|default|must|should|not authori[sz]ed|prohibited|remove)\b' -and
     $_ -notmatch '(?i)forensics|unique identifier|scoring report|CCS Client|time zone|Feature Updates|Reset this PC|JavaScript|Malwarebytes|Stop Scoring|home directories|auto-login'
   }
 }
@@ -533,7 +533,8 @@ function Step-Rights {
     foreach ($v in $vals) {
       $sid = if ($v.StartsWith('*')) { $v.Substring(1) } else { Resolve-Name $v }
       $name = if ($v.StartsWith('*')) { Resolve-Sid $sid } else { $v }
-      if ($sid -and $sid -match $BroadSids) {
+      $dcDefault = $IsDC -and $right -eq 'SeMachineAccountPrivilege' -and $sid -eq 'S-1-5-11'
+      if ($sid -and $sid -match $BroadSids -and -not $dcDefault) {
         $found = $true
         if (Ask "'$name' has '$($SensitiveRights[$right])' ($right). Remove it?") { continue }
       }

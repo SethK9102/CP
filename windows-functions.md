@@ -164,7 +164,7 @@ Exports the user rights assignments (secpol.msc > User Rights Assignment) and ch
 
 The changes are written back with `secedit`. Then it prints the "Deny ..." rights with names in place of SIDs, so you can check that Guests are denied network and RDP logon.
 
-On a domain controller, Authenticated Users holding "Add workstations to domain" is the Windows default.
+On a domain controller, Authenticated Users holding "Add workstations to domain" is the Windows default, so the step leaves that one alone.
 
 ### Step-SecOptions
 Sets these registry values without asking again:
